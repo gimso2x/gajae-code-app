@@ -30,6 +30,10 @@ import { sessionsDb as sessions } from '@/modules/database/repositories/sessions
 import { sessionWorktreesDb as sessionWorktrees } from '@/modules/database/repositories/session-worktrees.db.js';
 import { userDb as users } from '@/modules/database/repositories/users.js';
 
+export { createOwnerSessionRepository } from '@/modules/database/repositories/owner-sessions.js';
+export { createOwnerDeviceRepository } from '@/modules/database/repositories/owner-devices.js';
+export { createOwnerEventRepository } from '@/modules/database/repositories/owner-events.js';
+export { createOwnerDeliveryRepository, DELIVERY_RETRY_AFTER_MAX_SECONDS } from '@/modules/database/repositories/owner-deliveries.js';
 export {
   apiKeys as apiKeysDb,
   appConfig as appConfigDb,

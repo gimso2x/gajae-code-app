@@ -1,6 +1,7 @@
 import type { VerifyClientCallbackSync } from 'ws';
 
 import { hasValidApiKey } from '@/middleware/auth.js';
+import { createOwnerAdmissionPolicy } from '@/middleware/owner-http-auth.js';
 import { isAllowedRequestOrigin } from '@/shared/request-origin.js';
 import type { AuthenticatedWebSocketRequest } from '@/shared/types.js';
 
@@ -17,6 +18,7 @@ type WebSocketAuthDependencies = Readonly<{
   desktopAuth?: { authenticateWebSocket: (request: { headers: { origin?: string; cookie?: string } }) => boolean };
   /** Raw `ALLOWED_HOSTS`; defaults to the process environment. */
   allowedHosts?: string | undefined;
+  ownerPolicy?: ReturnType<typeof createOwnerAdmissionPolicy>;
 }>;
 
 function acceptsOrigin(request: AuthenticatedWebSocketRequest, configuredHosts?: string): boolean {
@@ -39,7 +41,7 @@ function requestPath(request: AuthenticatedWebSocketRequest): string | null {
   }
 }
 
-export function verifyWebSocketClient(info: Parameters<VerifyClientCallbackSync<AuthenticatedWebSocketRequest>>[0], dependencies: WebSocketAuthDependencies): boolean {
+export function verifyWebSocketClient(info: Parameters<VerifyClientCallbackSync<AuthenticatedWebSocketRequest>>[0], dependencies: WebSocketAuthDependencies): boolean | Promise<boolean> {
   const upgradeRequest = info.req as AuthenticatedWebSocketRequest;
   const pathname = requestPath(upgradeRequest);
   if (pathname === null) return false;
@@ -56,6 +58,15 @@ export function verifyWebSocketClient(info: Parameters<VerifyClientCallbackSync<
   // here too, before any chat, terminal, or browser socket gains owner access.
   if (!hasValidApiKey(upgradeRequest)) return false;
 
+  const policy = dependencies.ownerPolicy ?? createOwnerAdmissionPolicy();
+  if (policy.configured) {
+    try {
+      return Promise.resolve(policy.authenticate(upgradeRequest)).then((identity) => {
+        upgradeRequest.user = { userId: identity.uid, username: identity.uid };
+        return true;
+      }, () => false);
+    } catch { return false; }
+  }
   const owner = dependencies.authenticateWebSocket();
   if (!owner) {
     console.log('[WARN] Rejected WebSocket upgrade: no authenticated user');

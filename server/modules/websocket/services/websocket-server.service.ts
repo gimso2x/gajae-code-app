@@ -1,7 +1,8 @@
 import type { Server as HttpServer } from 'node:http';
 
-import { WebSocketServer, type VerifyClientCallbackSync } from 'ws';
+import { WebSocketServer, type VerifyClientCallbackAsync } from 'ws';
 
+import { createOwnerAdmissionPolicy } from '@/middleware/owner-http-auth.js';
 import { handleDesktopNotificationsConnection } from '@/modules/notifications/index.js';
 import { handleChatConnection } from '@/modules/websocket/services/chat-websocket.service.js';
 import { handleShellConnection } from '@/modules/websocket/services/shell-websocket.service.js';
@@ -27,19 +28,49 @@ function startHeartbeat(socket: Parameters<typeof handleChatConnection>[0]): voi
   socket.on('error', stopHeartbeat);
 }
 
+export function watchOwnerSession(socket: Parameters<typeof handleChatConnection>[0], request: AuthenticatedWebSocketRequest,
+  policy: ReturnType<typeof createOwnerAdmissionPolicy>): void {
+  if (!policy.configured) return;
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout>;
+  const stop = () => { stopped = true; clearTimeout(timer); };
+  socket.once('close', stop);
+  socket.once('error', stop);
+  const check = async () => {
+    try {
+      const identity = await policy.authenticate(request);
+      if (stopped) return;
+      const delay = Math.max(1, Math.min(15_000, identity.expiresAt - Date.now()));
+      timer = setTimeout(() => { void check(); }, delay);
+      timer.unref();
+    } catch {
+      if (!stopped) socket.close(1008, 'Owner authorization failed');
+      stop();
+    }
+  };
+  void check();
+}
+
 function connectionPath(request: AuthenticatedWebSocketRequest): string {
   return new URL(request.url ?? '/', 'http://localhost').pathname;
 }
 
 export function createWebSocketServer(server: HttpServer, dependencies: GatewayDependencies): WebSocketServer {
+  const ownerPolicy = dependencies.verifyClient.ownerPolicy ?? createOwnerAdmissionPolicy();
   const verification = {
-    verifyClient: (info: Parameters<VerifyClientCallbackSync<AuthenticatedWebSocketRequest>>[0]) => verifyWebSocketClient(info, dependencies.verifyClient),
+    verifyClient: ((info, done) => {
+      try {
+        void Promise.resolve(verifyWebSocketClient(info, { ...dependencies.verifyClient, ownerPolicy }))
+          .then((accepted) => done(accepted, accepted ? undefined : 401), () => done(false, 401));
+      } catch { done(false, 401); }
+    }) as VerifyClientCallbackAsync<AuthenticatedWebSocketRequest>,
   };
   const gateway = new WebSocketServer({ ...verification, server });
 
   gateway.on('connection', (socket, rawRequest) => {
     startHeartbeat(socket);
     const request = rawRequest as AuthenticatedWebSocketRequest;
+    watchOwnerSession(socket, request, ownerPolicy);
     const pathname = connectionPath(request);
     const routeHandlers: Record<string, () => boolean> = {
       '/shell': () => {

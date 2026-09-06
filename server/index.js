@@ -36,6 +36,7 @@ import {
     spawnGjcRun,
 } from './gjc-worker-client.js';
 import { getProductionJobAuthority, getProductionJobOrchestrator } from './services/gjc-job-orchestrator.js';
+import { createOwnerDeliveryLifecycle } from './services/owner-delivery-lifecycle.js';
 import { readSessionLocation, resolveSessionWorkspacePath, validateSessionRepository } from './services/session-worktree-paths.js';
 import { abortSessionWorktreeRun, prepareSessionWorktreeRun, sessionWorktreeWorkerHandle } from './services/session-worktree-runtime.js';
 import { getProductionGjcJobGitService } from './services/gjc-job-git.service.js';
@@ -1576,6 +1577,7 @@ async function removeLocalServerMarker() {
 
 // Initialize database and start server
 async function startServer() {
+    const ownerDeliveryLifecycle = createOwnerDeliveryLifecycle();
     try {
         // Initialize authentication database
         await initializeDatabase();
@@ -1655,6 +1657,7 @@ async function startServer() {
                 return;
             }
             shutdownStarted = true;
+            const deliveryStopped = ownerDeliveryLifecycle.stop();
 
             let gjcShutdownFenced = false;
             try {
@@ -1696,10 +1699,16 @@ async function startServer() {
             } catch (err) {
                 console.error('[Local Server] Error removing server marker during shutdown:', err?.message || err);
             }
+            if (!(await deliveryStopped).settled) {
+                console.warn('[FCM] Shutdown is waiting for unresolved delivery; no cancellation was performed.');
+                await ownerDeliveryLifecycle.settled();
+            }
             process.exit(0);
+
         };
         process.on('SIGTERM', () => void shutdownRuntimeServices());
         process.on('SIGINT', () => void shutdownRuntimeServices());
+        ownerDeliveryLifecycle.start();
     } catch (error) {
         console.error('[ERROR] Failed to start server:', error);
         process.exit(1);

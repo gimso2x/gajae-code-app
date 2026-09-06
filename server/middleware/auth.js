@@ -37,6 +37,13 @@ const validateApiKey = (req, res, next) => {
 // The desktop middleware validates the per-boot key before this attaches the
 // implicit owner to protected HTTP routes.
 const authenticateToken = (req, res, next) => {
+  if (req.ownerIdentity) {
+    req.user = { id: req.ownerIdentity.uid, username: req.ownerIdentity.uid };
+    return next();
+  }
+  if (process.env.FIREBASE_PROJECT_ID?.trim() || process.env.FIREBASE_OWNER_HTTP_ENABLED === '1') {
+    return res.status(401).json({ error: 'Owner authorization failed' });
+  }
   req.user = getImplicitOwner();
   return next();
 };
@@ -44,6 +51,7 @@ const authenticateToken = (req, res, next) => {
 // The WebSocket gateway runs desktopAuth.authenticateWebSocket before this
 // attaches the implicit owner.
 const authenticateWebSocket = () => {
+  if (process.env.FIREBASE_PROJECT_ID?.trim() || process.env.FIREBASE_OWNER_HTTP_ENABLED === '1') return null;
   const owner = getImplicitOwner();
   return { userId: owner.id, username: owner.username };
 };

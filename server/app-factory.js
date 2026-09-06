@@ -6,8 +6,11 @@ import express from 'express';
 import { parseAllowedHosts } from '../shared/networkHosts.js';
 
 import { createDesktopAuth, DESKTOP_BOOTSTRAP_PATH } from './middleware/desktop-auth.js';
+import { createOwnerAdmissionPolicy, createOwnerHttpAdmission } from './middleware/owner-http-auth.js';
 import { createWebSocketServer } from './modules/websocket/index.js';
 import { createGjcJobsRouter } from './routes/gjc-jobs.js';
+import { createOwnerDevicesRouter, isOwnerDeviceEndpoint } from './routes/owner-devices.js';
+import { createOwnerEventsRouter } from './routes/owner-events.js';
 import { isAllowedRequestOrigin } from './shared/request-origin.js';
 
 /**
@@ -26,6 +29,9 @@ export function createGjcAppFactory({
   chat,
   shell,
   browser = undefined,
+  ownerPolicy = createOwnerAdmissionPolicy(),
+  eventIntake = {},
+  deviceRegistry = {},
 }) {
   orchestrator.deps.broadcast = (jobId, event) => {
     try { projection.publish(jobId, event); } catch { /* Durable replay recovers isolated websocket fan-out failures. */ }
@@ -38,7 +44,7 @@ export function createGjcAppFactory({
   const server = http.createServer(app);
   const desktopAuth = createDesktopAuth({ server });
   const wss = createWebSocketServer(server, {
-    verifyClient: { authenticateWebSocket, desktopAuth },
+    verifyClient: { authenticateWebSocket, desktopAuth, ownerPolicy },
     chat,
     shell,
     browser,
@@ -81,6 +87,17 @@ export function createGjcAppFactory({
         : desktopAuth.authenticatePage(request, response, next);
     });
   }
+  // Intake parses before the general 50 MB parser; deployment admission remains mandatory.
+  const eventRouter = createOwnerEventsRouter(eventIntake);
+  app.use((request, response, next) => {
+    if (request.method !== 'POST' || request.path !== '/api/internal/events') return next();
+    return validateApiKey(request, response, () => eventRouter(request, response, next));
+  });
+  const deviceRouter = createOwnerDevicesRouter(deviceRegistry);
+  app.use((request, response, next) => {
+    if (!isOwnerDeviceEndpoint(request)) return next();
+    return validateApiKey(request, response, () => deviceRouter(request, response, next));
+  });
   app.use(express.json({
     limit: '50mb',
     type: (req) => {
@@ -90,6 +107,7 @@ export function createGjcAppFactory({
   }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
   app.use('/api', validateApiKey);
+  app.use(createOwnerHttpAdmission({ policy: ownerPolicy }));
   app.use('/api/gjc', authenticateGjcRoute, createGjcJobsRouter({ authority, orchestrator, gitService }));
 
   return { app, server, wss };

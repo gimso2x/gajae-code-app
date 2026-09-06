@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { createServer, request as httpRequest } from 'node:http';
 import test from 'node:test';
 
 import WebSocket from 'ws';
 
+import { createOwnerAdmissionPolicy, createOwnerHttpAdmission } from '@/middleware/owner-http-auth.js';
 import { verifyWebSocketClient } from '@/modules/websocket/services/websocket-auth.service.js';
-import { createWebSocketServer } from '@/modules/websocket/services/websocket-server.service.js';
+import { createWebSocketServer, watchOwnerSession } from '@/modules/websocket/services/websocket-server.service.js';
 
 /*
  * The upgrade check is the only thing standing between a page the owner
@@ -171,4 +172,112 @@ test('the live gateway rejects unauthorized and malformed upgrades and still acc
   t.after(() => client.terminate());
   assert.equal(String((await message)[0]), 'authenticated');
   assert.equal(attached, 1);
+});
+
+test('configured owner policy protects every upgrade without legacy fallback', async () => {
+  const env = { FIREBASE_PROJECT_ID: 'fixture', FIREBASE_OWNER_UID: 'owner', FIREBASE_OWNER_HTTP_ENABLED: '1', FIREBASE_SESSION_ORIGIN: 'https://fixture.example' };
+  const installationId = 'i'.repeat(43);
+  const session = 's'.repeat(43);
+  let revoked = false;
+  let legacy = 0;
+  const policy = createOwnerAdmissionPolicy({ env, getAuthority: () => ({ authenticate: () => {
+    if (revoked) throw new Error('private');
+    return { uid: 'owner', projectId: 'fixture', installationId, service: 'gjc', expiresAt: Date.now() + 10000 };
+  } }) });
+  for (const url of ['/ws', '/shell', '/desktop-notifications', '/ws/browser']) {
+    const info = { req: { url, headers: { host: 'fixture.example', origin: 'https://fixture.example', cookie: `__Host-gjc-session=${session}; __Host-gjc-installation=${installationId}` } } };
+    const dependencies = { ownerPolicy: policy, allowedHosts: 'fixture.example', authenticateWebSocket: () => { legacy++; return owner(); } };
+    assert.equal(await verifyWebSocketClient(info as never, dependencies), true);
+    revoked = true;
+    assert.equal(await verifyWebSocketClient(info as never, dependencies), false);
+    revoked = false;
+    delete (info.req.headers as Record<string, unknown>).cookie;
+    assert.equal(await verifyWebSocketClient(info as never, dependencies), false);
+  }
+  assert.equal(legacy, 0);
+});
+
+test('missing owner permits only identity discovery, never exchange or protected access', async () => {
+  const admission = createOwnerHttpAdmission({ env: { FIREBASE_PROJECT_ID: 'fixture' } });
+  for (const [method, originalUrl, allowed] of [
+    ['GET', '/api/auth/firebase/login', true], ['POST', '/api/auth/firebase/identity', true],
+    ['POST', '/api/auth/session/code', false], ['POST', '/api/auth/session/consume', false], ['GET', '/api/auth/user', false],
+  ] as const) {
+    let passed = false;
+    let status = 0;
+    await admission({ method, originalUrl, headers: {} }, {
+      set() {}, status(value: number) { status = value; return this; }, json() {},
+    }, () => { passed = true; });
+    assert.equal(passed, allowed);
+    if (!allowed) assert.equal(status, 503);
+  }
+});
+
+test('WebSocket revalidation closes rejected sessions without leaking reason and clears on close', async () => {
+  const socket = new EventEmitter() as EventEmitter & { close: (code: number, reason: string) => void };
+  let closed = 0;
+  socket.close = (code, reason) => { assert.equal(code, 1008); assert.equal(reason, 'Owner authorization failed'); closed++; socket.emit('close'); };
+  const policy = { configured: true, authenticate: () => { throw new Error('private revocation detail'); } };
+  watchOwnerSession(socket as never, {} as never, policy as never);
+  await Promise.resolve();
+  assert.equal(closed, 1);
+});
+
+test('WebSocket expiry and local revocation close on bounded fake-clock checks', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 });
+  for (const reason of ['expiry', 'revocation'] as const) {
+    const start = Date.now();
+    const installationId = 'i'.repeat(43);
+    let revoked = false;
+    let calls = 0;
+    let closes = 0;
+    const socket = new EventEmitter() as EventEmitter & { close: (code: number, message: string) => void };
+    socket.close = (code, message) => {
+      assert.equal(code, 1008);
+      assert.equal(message, 'Owner authorization failed');
+      closes++;
+      socket.emit('close');
+    };
+    const policy = createOwnerAdmissionPolicy({
+      env: { FIREBASE_PROJECT_ID: 'fixture', FIREBASE_OWNER_UID: 'owner', FIREBASE_OWNER_HTTP_ENABLED: '1', FIREBASE_SESSION_ORIGIN: 'https://fixture.example' },
+      getAuthority: () => ({ authenticate: () => {
+        calls++;
+        if (revoked) throw new Error('private revoke');
+        return { uid: 'owner', projectId: 'fixture', installationId, service: 'gjc', expiresAt: start + (reason === 'expiry' ? 2000 : 60000) };
+      } }),
+    });
+    const request = { headers: { host: 'fixture.example', cookie: `__Host-gjc-session=${'s'.repeat(43)}; __Host-gjc-installation=${installationId}` } };
+    watchOwnerSession(socket as never, request as never, policy);
+    await Promise.resolve();
+    assert.equal(calls, 1);
+    revoked = reason === 'revocation';
+    t.mock.timers.tick(reason === 'expiry' ? 1999 : 14999);
+    await Promise.resolve();
+    assert.equal(closes, 0);
+    t.mock.timers.tick(1);
+    await Promise.resolve();
+    assert.equal(closes, 1);
+    assert.equal(calls, 2);
+    t.mock.timers.tick(60000);
+    await Promise.resolve();
+    assert.equal(calls, 2);
+  }
+});
+
+test('WebSocket close and error cancel pending revalidation timers', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 });
+  for (const event of ['close', 'error']) {
+    let calls = 0;
+    const socket = new EventEmitter();
+    const policy = {
+      configured: true,
+      authenticate: () => { calls++; return { expiresAt: Date.now() + 60000 }; },
+    };
+    watchOwnerSession(socket as never, {} as never, policy as never);
+    await Promise.resolve();
+    socket.emit(event);
+    t.mock.timers.tick(60000);
+    await Promise.resolve();
+    assert.equal(calls, 1);
+  }
 });
