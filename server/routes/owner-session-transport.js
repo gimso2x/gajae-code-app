@@ -23,6 +23,8 @@ export function createOwnerSessionRouter({ authority, env }) {
     // Sec-Fetch-Site denies known browser cross-site requests; Origin is not auth.
     if (allowNative && request.headers.origin === undefined
       && (!request.headers['sec-fetch-site'] || request.headers['sec-fetch-site'] === 'none')) return;
+    if (allowNative && request.originalUrl === '/api/auth/session/native-consume'
+      && request.headers.origin === 'null' && request.headers['sec-fetch-site'] === 'none') return;
     throw new Error('Forbidden origin');
   };
   const route = (handler) => async (request, response) => {

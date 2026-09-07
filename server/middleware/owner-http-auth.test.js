@@ -31,6 +31,7 @@ function setup(options = {}) {
         set() {},
         status(status) { result.status = status; return this; },
         json(body) { result.body = body; return this; },
+        redirect(status, location) { result.status = status; result.body = location; return this; },
       };
       await middleware(request, response, () => { result.next = true; });
       return { ...result, identity: request.ownerIdentity };
@@ -101,4 +102,24 @@ test('exact mutation Origin and unique opaque cookie pair are mandatory', async 
     assert.equal((await fixture.request({ headers: { host: 'fixture.example', cookie: invalidCookie } })).status, 401);
   }
   assert.equal((await fixture.request({ headers: { host: 'evil.example', cookie } })).status, 401);
+});
+
+test('unauthenticated page navigation reaches login without opening API or foreign origins', async () => {
+  const fixture = setup();
+  const headers = { host: 'fixture.example', accept: 'text/html', 'sec-fetch-mode': 'navigate' };
+  for (const originalUrl of ['/', '/session/example']) {
+    const result = await fixture.request({ originalUrl, headers });
+    assert.equal(result.status, 303);
+    assert.equal(result.body, '/api/auth/firebase/login');
+    assert.equal(result.next, false);
+  }
+  for (const overrides of [
+    { originalUrl: '/api/projects' }, { originalUrl: '/assets/index.js' },
+    { method: 'POST' }, { headers: { ...headers, host: 'evil.example' } },
+    { headers: { ...headers, origin: 'https://evil.example' } },
+    { headers: { ...headers, 'sec-fetch-mode': 'cors' } },
+  ]) {
+    assert.equal((await fixture.request({ originalUrl: '/', headers, ...overrides })).status, 401);
+  }
+  assert.equal((await fixture.request({ originalUrl: '/', headers: { ...headers, cookie } })).next, true);
 });

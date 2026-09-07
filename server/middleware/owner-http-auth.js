@@ -77,7 +77,17 @@ export function createOwnerHttpAdmission(options = {}) {
       if (EXCHANGE_ENDPOINTS.has(endpoint)) return next();
       if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !policy.mutationAllowed(request)) return deny(401);
       request.ownerIdentity = await policy.authenticate(request);
-    } catch { return deny(401); }
+    } catch {
+      const pathname = request.originalUrl.split('?')[0];
+      const pageNavigation = request.method === 'GET' && !/^\/(api|assets)(\/|$)/.test(pathname)
+        && request.headers.accept?.includes('text/html')
+        && (!request.headers['sec-fetch-mode'] || request.headers['sec-fetch-mode'] === 'navigate');
+      if (pageNavigation && policy.hostAllowed(request)
+        && (request.headers.origin === undefined || policy.mutationAllowed(request))) {
+        return response.redirect(303, '/api/auth/firebase/login');
+      }
+      return deny(401);
+    }
     return next();
   };
 }

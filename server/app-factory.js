@@ -73,6 +73,12 @@ export function createGjcAppFactory({
     if (isAllowedRequestOrigin(request.headers.origin, originPolicy(request))) {
       return next();
     }
+    // Android's initial WebView POST has an opaque Origin. Only the one-use
+    // exchange may proceed; its route must still verify the code and binding.
+    if (!desktopAuth.enabled && ownerPolicy.ready() && ownerPolicy.hostAllowed(request)
+      && request.method === 'POST' && request.originalUrl === '/api/auth/session/native-consume'
+      && request.headers.origin === 'null' && request.headers['sec-fetch-site'] === 'none'
+      && isAllowedRequestOrigin(undefined, originPolicy(request))) return next();
     console.log('[WARN] Request rejected for origin:', request.headers.origin);
     return response.status(403).json({ error: 'Forbidden origin' });
   });

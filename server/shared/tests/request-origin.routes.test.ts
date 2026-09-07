@@ -7,8 +7,9 @@ import WebSocket from 'ws';
 
 import { createGjcAppFactory } from '../../app-factory.js';
 import { validateApiKey } from '../../middleware/auth.js';
+import { createOwnerAdmissionPolicy } from '../../middleware/owner-http-auth.js';
 
-async function fixture(t: TestContext, allowedHosts?: string) {
+async function fixture(t: TestContext, allowedHosts?: string, ownerPolicy?: ReturnType<typeof createOwnerAdmissionPolicy>) {
   const previous = Object.fromEntries(['ALLOWED_HOSTS', 'API_KEY', 'GJC_DESKTOP'].map((key) => [key, process.env[key]]));
   delete process.env.API_KEY;
   delete process.env.GJC_DESKTOP;
@@ -33,6 +34,7 @@ async function fixture(t: TestContext, allowedHosts?: string) {
     authenticateWebSocket: () => ({ userId: 'fixture-owner', username: 'fixture-owner' }),
     authenticateGjcRoute: (_request: unknown, _response: unknown, next: () => void) => next(),
     validateApiKey,
+    ownerPolicy,
     chat: {} as never,
     shell: {} as never,
     browser: ((socket: WebSocket) => { calls.sockets++; socket.send('fixture-browser'); }) as never,
@@ -48,10 +50,10 @@ async function fixture(t: TestContext, allowedHosts?: string) {
   });
   return {
     calls,
-    request: (headers: Record<string, string>, method = 'POST') => new Promise<{ status: number; body: string }>((resolve, reject) => {
+    request: (headers: Record<string, string>, method = 'POST', endpoint = '/api/gjc/jobs') => new Promise<{ status: number; body: string }>((resolve, reject) => {
       const payload = method === 'POST' ? JSON.stringify({ projectPath: '/fixture-only', message: 'never call a model' }) : undefined;
       const request = httpRequest({
-        hostname: '127.0.0.1', port: address.port, path: '/api/gjc/jobs', method,
+        hostname: '127.0.0.1', port: address.port, path: endpoint, method,
         headers: { ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}), ...headers },
       }, (response) => {
         let body = '';
@@ -169,4 +171,21 @@ test('explicitly configured and wildcarded published domains keep their reverse-
       assert.equal(await server.connect(headers), 101);
     });
   }
+});
+
+test('opaque native exchange reaches only its code-verifying route on an admitted owner host', async (t) => {
+  const ownerPolicy = createOwnerAdmissionPolicy({ env: { FIREBASE_OWNER_HTTP_ENABLED: '1',
+    FIREBASE_OWNER_UID: 'owner', FIREBASE_PROJECT_ID: 'fixture', FIREBASE_SESSION_ORIGIN: 'https://studio.example' } });
+  const server = await fixture(t, 'studio.example', ownerPolicy);
+  const headers = { host: 'studio.example', origin: 'null', 'sec-fetch-site': 'none' };
+  // No auth router in this fixture: 404 proves transport admission, not authentication.
+  assert.equal((await server.request(headers, 'POST', '/api/auth/session/native-consume')).status, 404);
+  for (const endpoint of ['/api/auth/session/code', '/api/auth/session/consume', '/api/gjc/jobs', '/']) {
+    assert.equal((await server.request(headers, 'POST', endpoint)).status, 403);
+  }
+  for (const changed of [{ host: 'evil.example' }, { origin: 'https://evil.example' }, { 'sec-fetch-site': 'cross-site' }]) {
+    assert.equal((await server.request({ ...headers, ...changed }, 'POST', '/api/auth/session/native-consume')).status, 403);
+  }
+  assert.equal((await server.request(headers, 'GET', '/api/auth/session/native-consume')).status, 403);
+  assert.equal(server.calls.starts, 0);
 });

@@ -171,3 +171,37 @@ test('identity SDK app ownership reuses same project and rejects mismatches with
   assert.throws(() => getFirebaseIdentityApp('other-project', sdk), /Identity project mismatch/);
   assert.equal(credentials, 1);
 });
+
+test('owner login exchanges Google identity for cookies before opening the app', async () => {
+  const page = firebaseLoginPage({ FIREBASE_PROJECT_ID: projectId, FIREBASE_WEB_API_KEY: 'fixture-key',
+    FIREBASE_AUTH_DOMAIN: 'fixture-project.firebaseapp.com', FIREBASE_WEB_APP_ID: 'fixture-app',
+    FIREBASE_OWNER_HTTP_ENABLED: '1', FIREBASE_SESSION_ORIGIN: 'https://fixture.example' });
+  const script = page.html.match(/<script type="module" nonce="[^"]+">([\s\S]*?)<\/script>/)[1];
+  for (const failedPath of [null, '/api/auth/session/code', '/api/auth/session/consume']) {
+    let click;
+    const elements = { 'sign-in': { addEventListener: (_event, handler) => { click = handler; } },
+      status: { textContent: '' }, 'deployment-key': { value: '' } };
+    const calls = [];
+    let destination;
+    let signedOut = false;
+    const grant = { code: 'c'.repeat(43), installationId: 'i'.repeat(43) };
+    const sdk = { initializeApp: () => ({}), initializeAuth: () => ({}), inMemoryPersistence: {},
+      browserPopupRedirectResolver: {}, GoogleAuthProvider: class {},
+      signInWithPopup: async () => ({ user: { getIdToken: async () => idToken } }),
+      signOut: async () => { signedOut = true; } };
+    const run = new (Object.getPrototypeOf(async function () {}).constructor)('sdk', 'document', 'fetch', 'window',
+      script.replace(/await import\('[^']+'\)/g, 'sdk'));
+    await run(sdk, { getElementById: (id) => elements[id] }, async (url, options) => {
+      calls.push(url);
+      assert.equal(options.credentials, 'same-origin');
+      assert.equal(options.method, 'POST');
+      assert.deepEqual(JSON.parse(options.body), url.endsWith('/code') ? { idToken } : grant);
+      return { ok: url !== failedPath, json: async () => grant };
+    }, { location: { replace: (url) => { assert.equal(signedOut, true); destination = url; } } });
+    await click();
+    assert.deepEqual(calls, failedPath === '/api/auth/session/code'
+      ? ['/api/auth/session/code'] : ['/api/auth/session/code', '/api/auth/session/consume']);
+    assert.equal(destination, failedPath ? undefined : '/');
+    assert.equal(signedOut, true);
+  }
+});

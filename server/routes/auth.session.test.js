@@ -148,3 +148,17 @@ test('session identity adapter validates verified exp without exposing expiry in
     });
   }
 });
+
+test('native WebView opaque Origin exchanges only a valid single-use bound grant', async (t) => {
+  const f = await fixture(t);
+  const issued = await code(f);
+  const headers = { Origin: 'null', 'Sec-Fetch-Site': 'none' };
+  assert.equal((await f.post('code', { idToken: 'fixture.payload.signature' }, headers)).status, 401);
+  assert.equal((await f.post('consume', issued, headers)).status, 401);
+  assert.equal((await f.post('native-consume', issued, { ...headers, 'Sec-Fetch-Site': 'cross-site' })).status, 401);
+  assert.equal((await f.post('native-consume', { ...issued, installationId: 'x'.repeat(43) }, headers)).status, 401);
+  const consumed = await f.post('native-consume', issued, headers);
+  assert.equal(consumed.status, 303);
+  assert.equal(consumed.headers.getSetCookie().length, 2);
+  assert.equal((await f.post('native-consume', issued, headers)).status, 401);
+});
