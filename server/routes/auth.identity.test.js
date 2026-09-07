@@ -180,7 +180,7 @@ test('owner login exchanges Google identity for cookies before opening the app',
   for (const failedPath of [null, '/api/auth/session/code', '/api/auth/session/consume']) {
     let click;
     const elements = { 'sign-in': { addEventListener: (_event, handler) => { click = handler; } },
-      status: { textContent: '' }, 'deployment-key': { value: '' } };
+      status: { textContent: '' } };
     const calls = [];
     let destination;
     let signedOut = false;
@@ -203,5 +203,24 @@ test('owner login exchanges Google identity for cookies before opening the app',
       ? ['/api/auth/session/code'] : ['/api/auth/session/code', '/api/auth/session/consume']);
     assert.equal(destination, failedPath ? undefined : '/');
     assert.equal(signedOut, true);
+  }
+});
+
+test('login matches the board card with one Google action and nonce-scoped styles', () => {
+  const env = { FIREBASE_PROJECT_ID: projectId, FIREBASE_WEB_API_KEY: 'fixture-key',
+    FIREBASE_AUTH_DOMAIN: 'fixture-project.firebaseapp.com', FIREBASE_WEB_APP_ID: 'fixture-app',
+    FIREBASE_OWNER_HTTP_ENABLED: '1' };
+  for (const config of [env, {}]) {
+    const page = firebaseLoginPage(config);
+    assert.match(page.html, /<html lang="ko">/);
+    assert.match(page.html, /<main aria-labelledby="title">/);
+    assert.equal((page.html.match(/<button\b/g) || []).length, 1);
+    assert.doesNotMatch(page.html, /<input\b|deployment-key|keyInput|x-api-key|Deployment API key/);
+    assert.match(page.html, /aria-describedby="status"/);
+    assert.match(page.html, /aria-live="polite"/);
+    assert.match(page.html, /<noscript>/);
+    const nonce = page.html.match(/<style nonce="([^"]+)">/)[1];
+    assert.ok(page.csp.includes(`style-src 'nonce-${nonce}'`));
+    assert.ok(!page.csp.includes('unsafe-inline'));
   }
 });
