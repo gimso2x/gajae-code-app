@@ -26,7 +26,7 @@ async function fixture(t, owner = 'owner') {
   });
   app.use(express.json());
   app.use('/api', (req, res, next) => req.headers['x-api-key'] === 'fixture-key' ? next() : res.sendStatus(401));
-  app.use('/api/auth', createAuthRouter({
+  app.use(createAuthRouter({
     env: { FIREBASE_PROJECT_ID: 'fixture', FIREBASE_OWNER_UID: owner, FIREBASE_SESSION_ORIGIN: origin },
     sessionRepository: createOwnerSessionRepository(() => db),
     verifyIdToken: async (_token, checkRevoked) => {

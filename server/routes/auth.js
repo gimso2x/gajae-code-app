@@ -15,9 +15,9 @@ export function createAuthRouter({ env = process.env, verifyIdToken, sessionRepo
     env, repository: sessionRepository,
     verifyIdentity: createFirebaseSessionIdentityVerifier({ env, verifyIdToken }),
   });
-  router.use('/session', createOwnerSessionRouter({ authority, env }));
+  router.use('/api/auth/session', createOwnerSessionRouter({ authority, env }));
 
-  router.get('/firebase/login', (_req, res) => {
+  router.get('/login', (_req, res) => {
     const page = firebaseLoginPage(env);
     res.set({
       'Cache-Control': 'no-store',
@@ -28,7 +28,7 @@ export function createAuthRouter({ env = process.env, verifyIdToken, sessionRepo
     return res.status(page.status).type('html').send(page.html);
   });
   // Identity only: admission remains in the app; this grants no service access.
-  router.post('/firebase/identity', async (req, res) => {
+  router.post('/api/auth/firebase/identity', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     try {
       const identity = await verifyIdentity(req.body?.idToken);
@@ -40,7 +40,7 @@ export function createAuthRouter({ env = process.env, verifyIdToken, sessionRepo
     }
   });
 
-  router.get('/user', authenticateToken, (req, res) => {
+  router.get('/api/auth/user', authenticateToken, (req, res) => {
     res.json({
       user: req.user,
       // The desktop webview is a loopback origin with no Tauri IPC; the client

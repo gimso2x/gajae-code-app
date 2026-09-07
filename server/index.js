@@ -188,7 +188,7 @@ app.get('/health', (req, res) => {
 });
 
 // Authentication routes (public)
-app.use('/api/auth', authRoutes);
+app.use(authRoutes);
 
 // Projects API Routes (protected)
 app.use('/api/projects', authenticateToken, projectModuleRoutes);

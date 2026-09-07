@@ -30,26 +30,37 @@ export function firebaseLoginPage(env) {
     html: `<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${ownerLogin ? 'GJC 로그인' : 'Google 계정 확인'}</title>
 <style nonce="${nonce}">
-:root { color-scheme: dark; font-family: system-ui, sans-serif; --background: 0 0% 8%; --foreground: 40 8% 93%; --card: 0 0% 12%; --border: 0 0% 23%; --primary: 16 90% 57%; --muted-foreground: 0 0% 60%; }
+:root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; --background: 44 22% 96%; --foreground: 36 25% 4%; --card: 0 0% 100%; --border: 44 14% 87%; --primary: 14 89% 52%; --muted-foreground: 40 5% 44%; }
 * { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 1.25rem; background: hsl(var(--background)); color: hsl(var(--foreground)); }
-main { width: 100%; max-width: 28rem; padding: clamp(1.25rem, 5vw, 2.5rem); border: 1px solid hsl(var(--border)); border-radius: 1rem; background: hsl(var(--card)); }
-h1 { margin-top: 0; font-size: 1.75rem; letter-spacing: -.025em; }
-p { line-height: 1.65; overflow-wrap: anywhere; }
-button { width: 100%; min-height: 3rem; padding: .75rem 1rem; border: 1px solid hsl(var(--border)); border-radius: .5rem; font: inherit; font-weight: 700; background: hsl(var(--foreground)); color: hsl(var(--background)); cursor: pointer; }
-button:hover:not(:disabled) { background: hsl(var(--foreground) / .9); }
-button:disabled { cursor: wait; opacity: .65; }
-button:focus-visible { outline: 3px solid hsl(var(--primary)); outline-offset: 4px; }
-#status { min-height: 3.3em; margin-bottom: 0; color: hsl(var(--muted-foreground)); font-size: .875rem; }
+body { margin: 0; min-height: 100vh; min-height: 100dvh; display: grid; grid-template-rows: auto 1fr auto; padding: 32px 40px; background: hsl(var(--background)); color: hsl(var(--foreground)); }
+.brand { font-size: 18px; font-weight: 650; letter-spacing: -.6px; }
+.brand span { margin-left: 12px; padding-left: 12px; border-left: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font-size: 13px; font-weight: 400; letter-spacing: 0; }
+main { align-self: center; width: 100%; max-width: 360px; margin: 64px auto 96px; }
+.service-name { margin: 0 0 24px; font-size: 12px; letter-spacing: .12em; color: hsl(var(--muted-foreground)); }
+h1 { margin: 0 0 16px; font-size: clamp(30px, 5vw, 36px); font-weight: 600; line-height: 1.3; letter-spacing: -1.5px; }
+p { line-height: 1.7; overflow-wrap: anywhere; }
+.description { margin: 0 0 36px; font-size: 15px; color: hsl(var(--muted-foreground)); }
+.google-action { position: relative; }
+.google-mark { position: absolute; z-index: 1; left: 20px; top: 50%; transform: translateY(-50%); font: 600 20px Arial, sans-serif; pointer-events: none; }
+button { width: 100%; min-height: 52px; padding: 14px 48px; border: 1px solid hsl(var(--border)); border-radius: 6px; font: inherit; font-size: 14px; font-weight: 550; background: hsl(var(--card)); color: hsl(var(--foreground)); cursor: pointer; }
+button:hover:not(:disabled) { border-color: hsl(var(--muted-foreground)); }
+button:disabled { cursor: wait; opacity: .6; }
+button:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 4px; }
+#status { min-height: 3.4em; margin: 16px 0 0; color: hsl(var(--muted-foreground)); font-size: 12px; }
+footer { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid hsl(var(--border)); padding-top: 20px; color: hsl(var(--muted-foreground)); font-size: 11px; }
+@media (max-width: 480px) { body { padding: 24px; } main { margin: 56px auto; } footer { font-size: 10px; } }
 </style>
 </head><body>
+<header class="brand">gimso<span>개인 워크스페이스</span></header>
 <main aria-labelledby="title">
-<h1 id="title">${ownerLogin ? 'GJC 로그인' : 'Google 계정 확인'}</h1>
-<p>${ownerLogin ? '등록된 소유자 Google 계정으로 로그인해 주세요. 로그인 창이 새로 열립니다.' : 'Google 계정을 확인합니다. 서비스 접근 권한은 부여되지 않습니다.'}</p>
-<button id="sign-in" type="button" disabled aria-describedby="status">Google로 로그인</button>
+<p class="service-name">GAJAE CODE</p>
+<h1 id="title">작업을 이어가세요.</h1>
+<p class="description">${ownerLogin ? 'GJC에 로그인하고 진행 중인 작업을 확인하세요.' : 'Google 계정을 확인합니다. 서비스 접근 권한은 부여되지 않습니다.'}</p>
+<div class="google-action"><span class="google-mark" aria-hidden="true">G</span><button id="sign-in" type="button" disabled aria-describedby="status">Google로 계속하기</button></div>
 <p id="status" role="status" aria-live="polite" aria-atomic="true">${available ? '로그인 모듈을 불러오는 중입니다.' : '로그인을 사용할 수 없습니다. 관리자에게 설정 확인을 요청해 주세요.'}</p>
 <noscript><p>로그인하려면 브라우저에서 JavaScript를 허용해 주세요.</p></noscript>
 </main>
+<footer><span>GJC · Gimso</span><span>등록된 계정만 이용할 수 있습니다.</span></footer>
 ${available ? `<script type="module" nonce="${nonce}">
 const button = document.getElementById('sign-in');
 const status = document.getElementById('status');
@@ -62,7 +73,7 @@ try {
     popupRedirectResolver: browserPopupRedirectResolver,
   });
   button.disabled = false;
-  status.textContent = '준비되었습니다. 버튼을 눌러 로그인해 주세요.';
+  status.textContent = '';
   button.addEventListener('click', async () => {
     button.disabled = true;
     button.textContent = '로그인 중…';

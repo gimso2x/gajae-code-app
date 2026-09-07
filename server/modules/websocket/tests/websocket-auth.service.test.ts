@@ -200,7 +200,7 @@ test('configured owner policy protects every upgrade without legacy fallback', a
 test('missing owner permits only identity discovery, never exchange or protected access', async () => {
   const admission = createOwnerHttpAdmission({ env: { FIREBASE_PROJECT_ID: 'fixture' } });
   for (const [method, originalUrl, allowed] of [
-    ['GET', '/api/auth/firebase/login', true], ['POST', '/api/auth/firebase/identity', true],
+    ['GET', '/login', true], ['POST', '/api/auth/firebase/identity', true],
     ['POST', '/api/auth/session/code', false], ['POST', '/api/auth/session/consume', false], ['GET', '/api/auth/user', false],
   ] as const) {
     let passed = false;

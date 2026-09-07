@@ -24,7 +24,7 @@ async function serve(t, options, admission = (_req, _res, next) => next()) {
   const app = express();
   app.use(express.json());
   app.use('/api', admission);
-  app.use('/api/auth', createAuthRouter(options));
+  app.use(createAuthRouter(options));
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
@@ -36,7 +36,7 @@ async function serve(t, options, admission = (_req, _res, next) => next()) {
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
-  post.login = (headers = {}) => fetch(`http://127.0.0.1:${server.address().port}/api/auth/firebase/login`, { headers });
+  post.login = (headers = {}) => fetch(`http://127.0.0.1:${server.address().port}/login`, { headers });
   return post;
 }
 
@@ -116,7 +116,7 @@ test('identity stays behind the existing deployment API key gate', async (t) => 
   assert.equal((await post({ idToken })).status, 401);
   assert.equal(verifyIdToken.mock.callCount(), 0);
   assert.equal((await post({ idToken }, { 'x-api-key': 'fixture-deployment-key' })).status, 200);
-  assert.equal((await post.login()).status, 401);
+  assert.equal((await post.login()).status, 503);
   assert.equal((await post.login({ 'x-api-key': 'fixture-deployment-key' })).status, 503);
 });
 
@@ -214,6 +214,9 @@ test('login matches the board card with one Google action and nonce-scoped style
     const page = firebaseLoginPage(config);
     assert.match(page.html, /<html lang="ko">/);
     assert.match(page.html, /<main aria-labelledby="title">/);
+    assert.match(page.html, /class="brand"/);
+    assert.match(page.html, /class="service-name"/);
+    assert.match(page.html, /class="google-mark" aria-hidden="true"/);
     assert.equal((page.html.match(/<button\b/g) || []).length, 1);
     assert.doesNotMatch(page.html, /<input\b|deployment-key|keyInput|x-api-key|Deployment API key/);
     assert.match(page.html, /aria-describedby="status"/);

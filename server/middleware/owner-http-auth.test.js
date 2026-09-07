@@ -53,7 +53,7 @@ test('only explicit method/path bootstrap endpoints bypass owner sessions', asyn
   const fixture = setup();
   const headers = { host: 'fixture.example' };
   for (const [method, originalUrl] of [
-    ['GET', '/api/auth/firebase/login'], ['POST', '/api/auth/firebase/identity'],
+    ['GET', '/login'], ['POST', '/api/auth/firebase/identity'],
     ['POST', '/api/auth/session/code'], ['POST', '/api/auth/session/consume'],
     ['POST', '/api/auth/session/native-consume'],
   ]) assert.equal((await fixture.request({ method, originalUrl, headers })).next, true);
@@ -110,7 +110,7 @@ test('unauthenticated page navigation reaches login without opening API or forei
   for (const originalUrl of ['/', '/session/example']) {
     const result = await fixture.request({ originalUrl, headers });
     assert.equal(result.status, 303);
-    assert.equal(result.body, '/api/auth/firebase/login');
+    assert.equal(result.body, '/login');
     assert.equal(result.next, false);
   }
   for (const overrides of [

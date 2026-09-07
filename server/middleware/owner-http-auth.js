@@ -7,7 +7,7 @@ import { createOwnerSessionAuthority } from '../services/owner-session-authority
  * @typedef {{env?: Record<string, string | undefined>, getAuthority?: () => OwnerAuthority, now?: () => number}} OwnerAdmissionOptions
  */
 
-const IDENTITY_ENDPOINTS = new Set(['GET /api/auth/firebase/login', 'GET /api/auth/firebase/login/', 'POST /api/auth/firebase/identity']);
+const IDENTITY_ENDPOINTS = new Set(['GET /login', 'GET /login/', 'POST /api/auth/firebase/identity']);
 const EXCHANGE_ENDPOINTS = new Set(['POST /api/auth/session/code', 'POST /api/auth/session/consume', 'POST /api/auth/session/native-consume']);
 
 export function readOwnerSessionCookies(request) {
@@ -84,7 +84,7 @@ export function createOwnerHttpAdmission(options = {}) {
         && (!request.headers['sec-fetch-mode'] || request.headers['sec-fetch-mode'] === 'navigate');
       if (pageNavigation && policy.hostAllowed(request)
         && (request.headers.origin === undefined || policy.mutationAllowed(request))) {
-        return response.redirect(303, '/api/auth/firebase/login');
+        return response.redirect(303, '/login');
       }
       return deny(401);
     }
