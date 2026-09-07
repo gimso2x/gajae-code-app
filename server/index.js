@@ -93,7 +93,7 @@ function readUsageNumber(value) {
 }
 
 function resolveProviderToolApproval(requestId, decision) {
-    resolveGjcToolApproval(requestId, decision);
+    return resolveGjcToolApproval(requestId, decision);
 }
 
 function getPendingProviderApprovalsForSession(sessionId) {
