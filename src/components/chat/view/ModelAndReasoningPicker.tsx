@@ -61,9 +61,11 @@ export const stripEffortSuffix = (selector: string): string =>
     .replace(/:(?:off|minimal|low|medium|high|xhigh|max)$/, '');
 
 /** Display order requested for provider groups; unlisted providers follow alphabetically. */
-const PROVIDER_ORDER = ['openai-codex', 'cursor', 'anthropic', 'kimi-code', 'zai', 'xai', 'grok-build'];
+const PROVIDER_ORDER = ['gimso2xproxy', 'opencodex', 'openai-codex', 'cursor', 'anthropic', 'kimi-code', 'zai', 'xai', 'grok-build'];
 
 const PROVIDER_LABELS: Readonly<Record<string, string>> = {
+  gimso2xproxy: 'Gimso2x Proxy',
+  opencodex: 'OpenCodex',
   'openai-codex': 'ChatGPT',
   cursor: 'Cursor',
   anthropic: 'Anthropic',

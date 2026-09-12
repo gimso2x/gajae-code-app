@@ -267,3 +267,77 @@ test('a runtime that answers with no available model reports an empty MODELS; an
   const unreachable = await new GjcProviderModels(homeDir, async () => { throw new Error('worker unavailable'); }).getSupportedModels();
   assert.equal('MODELS' in unreachable, false);
 });
+
+test('custom profiles with multiline fallback lists, comments, and custom providers in models.yml', async (t) => {
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'gajae-model-custom-providers-'));
+  t.after(() => rm(homeDir, { recursive: true, force: true }));
+  const agentDir = path.join(homeDir, '.gjc', 'agent');
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(path.join(agentDir, 'models.yml'), `providers:
+  gimso2xproxy:
+    baseUrl: https://proxy.example.com/v1
+    models:
+      - id: claude-opus-5
+        name: Claude Opus 5
+      - id: custom-unreferenced
+        name: Custom Unreferenced
+profiles:
+# Commented out profile should not break parsing
+#   inactive:
+#     model_mapping:
+#       default: custom/inactive
+  daily:
+    model_mapping:
+      default:
+        - gimso2xproxy/glm-5.3-flash:high
+        - gimso2xproxy/claude-sonnet-5:medium
+      executor:
+        - gimso2xproxy/gpt-5.6-luna:max
+`, 'utf8');
+
+  const catalog = await new GjcProviderModels(homeDir, async () => ({
+    ok: true,
+    result: {
+      models: [
+        {
+          value: 'gimso2xproxy/glm-5.3-flash',
+          label: 'GLM-5.3 Flash',
+          group: 'gimso2xproxy',
+          effort: { default: 'high', values: [{ value: 'high' }] },
+        },
+        {
+          value: 'gimso2xproxy/claude-sonnet-5',
+          label: 'Claude Sonnet 5',
+          group: 'gimso2xproxy',
+          effort: { default: 'medium', values: [{ value: 'medium' }] },
+        },
+        {
+          value: 'gimso2xproxy/custom-unreferenced',
+          label: 'Custom Unreferenced',
+          group: 'gimso2xproxy',
+          effort: { values: [] },
+        },
+        {
+          value: 'unrelated/model',
+          label: 'Unrelated',
+          group: 'unrelated',
+          effort: { values: [] },
+        },
+      ],
+    },
+  })).getSupportedModels();
+
+  const daily = catalog.OPTIONS.find((option) => option.value === 'profile:daily');
+  assert.ok(daily, 'daily preset should be parsed');
+  assert.equal(daily.label, 'Daily');
+  assert.equal(daily.group, 'CUSTOM');
+  assert.equal(daily.roles?.default, 'gimso2xproxy/glm-5.3-flash:high');
+  assert.equal(daily.roles?.executor, 'gimso2xproxy/gpt-5.6-luna:max');
+
+  // Both fallback models and all custom provider models should be retained
+  const modelValues = catalog.MODELS?.map((m) => m.value) ?? [];
+  assert.ok(modelValues.includes('gimso2xproxy/glm-5.3-flash'));
+  assert.ok(modelValues.includes('gimso2xproxy/claude-sonnet-5'));
+  assert.ok(modelValues.includes('gimso2xproxy/custom-unreferenced'));
+  assert.ok(!modelValues.includes('unrelated/model'));
+});
