@@ -43,8 +43,7 @@ import {
   GJC_ASIDE_UNAVAILABLE_CODE,
   GJC_ASIDE_UNAVAILABLE_MESSAGE,
   GJC_EGO_BROWSER_INSTRUCTIONS,
-  GJC_EGO_UNAVAILABLE_CODE,
-  GJC_EGO_UNAVAILABLE_MESSAGE,
+  GJC_EGO_BROWSER_UNAVAILABLE_INSTRUCTIONS,
 } from './gjc-browser-backend.js';
 import { GJC_CLEANUP_UNCONFIRMED_CODE } from './gjc-cleanup-error.js';
 import { isVerifiedSdkPatch, verifyRuntimeManifest } from './gjc-runtime-manifest.js';
@@ -145,6 +144,22 @@ test('runtime aliases with text handlers are dispatchable but not advertised', (
     assert.equal(advertised.has(alias), false, `${alias} must not be advertised`);
     assert.equal(advertised.has(canonical), true, `${canonical} must be advertised`);
   }
+});
+
+test('/usage stays the runtime\'s own command, not something the app reimplements', () => {
+  const advertised = GJC_APP_BUILTIN_COMMANDS.find((command) => command.name === 'usage');
+  assert.ok(advertised, '/usage must stay in the advertised catalog');
+  assert.equal(advertised.inputHint, '[check]', '/usage must keep its own argument surface');
+  assert.equal(
+    GJC_APP_BUILTIN_COMMAND_NAMES.has('usage'),
+    true,
+    '/usage must keep dispatching to the runtime handler; the sidebar quota row reads the same structured source instead of this command',
+  );
+  assert.equal(
+    ACP_BUILTIN_SLASH_COMMANDS.some((command) => command.name === 'usage'),
+    true,
+    'the runtime still owns the /usage implementation',
+  );
 });
 
 /** Scriptable SDK-shaped session; prompt owns the turn lifetime exactly as production does. */
@@ -2363,6 +2378,7 @@ test('selecting ego keeps the runtime on native, disables its browser tool, with
   const f = await fixture(undefined, undefined, undefined, undefined, undefined, undefined, {
     probeAsideCli: () => { asideProbes += 1; return { ok: true, path: '/never/used/aside' }; },
     probeEgoBrowserCli: () => { egoProbes += 1; return { ok: true, path: '/fake/.local/bin/ego-browser' }; },
+    platform: 'darwin',
   });
   try {
     const run = f.host.handle(request('session.start', 'browser-ego', {
@@ -2386,8 +2402,9 @@ test('selecting ego keeps the runtime on native, disables its browser tool, with
     assert.equal(factoryInput.customTools, undefined);
     const appended = (factoryInput.systemPrompt as (defaults: string[]) => string[])(['runtime-default']);
     assert.equal(appended[0], 'runtime-default');
-    assert.equal(appended.at(-1), GJC_EGO_BROWSER_INSTRUCTIONS);
-    assert.equal(appended.join('\n').toLowerCase().includes('aside'), false);
+    assert.match(appended.at(-1) ?? '', /'\/fake\/\.local\/bin\/ego-browser' nodejs/);
+    assert.ok((appended.at(-1) ?? '').includes('ego-browser onboarding'));
+    assert.equal(appended.join('\n').toLowerCase().includes('aside repl'), false);
     assert.equal(egoProbes, 1);
     assert.equal(asideProbes, 0);
     session.complete();
@@ -2395,22 +2412,25 @@ test('selecting ego keeps the runtime on native, disables its browser tool, with
   } finally { await f.close(); }
 });
 
-test('selecting ego without an ego-browser CLI refuses the run with its own code and never falls back to Built-in', async () => {
+test('selecting ego without an ego-browser CLI keeps ordinary chat alive and never falls back to another browser', async () => {
   const f = await fixture(undefined, undefined, undefined, undefined, undefined, undefined, {
     probeEgoBrowserCli: () => ({ ok: false, searched: ['/fake/.local/bin/ego-browser', 'PATH (ego-browser)'] }),
+    platform: 'darwin',
   });
   try {
-    await f.host.handle(request('session.start', 'browser-ego-missing', {
+    const run = f.host.handle(request('session.start', 'browser-ego-missing', {
       message: 'hello', options: { ...f.options, browserBackend: 'ego', builtinBrowserAvailable: true },
     }, 'app-session-ego-missing'));
-    const payload = response(f.frames, 'browser-ego-missing').payload as { ok: boolean; error: { code: string; message: string } };
-    assert.equal(payload.ok, false);
-    assert.deepEqual(payload.error, { code: GJC_EGO_UNAVAILABLE_CODE, message: GJC_EGO_UNAVAILABLE_MESSAGE });
-    assert.equal(f.sessions.length, 0, 'no session may start with a different backend');
-    assert.equal(f.factoryOptions.length, 0);
-    assert.equal(f.toolPolicyOverrides.has('browser.backend'), false);
-    assert.equal(f.toolPolicyOverrides.has('browser.enabled'), false);
+    const session = await firstSession(f.sessions);
+    await session.promptStarted.promise;
+    const factoryInput = f.factoryOptions[0]!;
+    assert.equal(f.toolPolicyOverrides.get('browser.backend'), 'native');
+    assert.equal(f.toolPolicyOverrides.get('browser.enabled'), false);
+    assert.deepEqual(Object.keys(factoryInput.automationTools as Record<string, unknown>), ['computer']);
+    assert.ok((factoryInput.systemPrompt as (defaults: string[]) => string[])([]).includes(GJC_EGO_BROWSER_UNAVAILABLE_INSTRUCTIONS));
     assert.equal(JSON.stringify(f.frames).includes('/fake/.local/bin'), false, 'probe paths stay out of the wire');
+    session.complete();
+    await run;
   } finally { await f.close(); }
 });
 
@@ -2463,7 +2483,10 @@ test('the production adapter passes bypass to automation without answering real 
       const result = incoming.operation === 'authorize'
         ? incoming.surface === 'browser'
           ? { granted: false, origin: 'https://example.com' }
-          : { granted: false, application: 'com.apple.TextEdit', label: 'TextEdit' }
+          : {
+            granted: (incoming.payload as Record<string, unknown> | undefined)?.scope === 'session',
+            application: 'com.apple.TextEdit', label: 'TextEdit',
+          }
         : { success: true };
       socket.end(`${JSON.stringify({ id: incoming.id, ok: incoming.token === token, result })}\n`);
     });
@@ -2484,9 +2507,10 @@ test('the production adapter passes bypass to automation without answering real 
     await tools.browser!.execute('browser-bypass', { action: 'open', url: 'https://example.com' }, AbortSignal.timeout(5_000));
     await tools.computer!.execute('computer-bypass', { action: 'click', arguments: { pid: 42, x: 1, y: 1 } }, AbortSignal.timeout(5_000));
     assert.equal(methods(f.frames).filter(method => method === 'ask.presented').length, 0);
-    assert.deepEqual(requests.map(item => item.operation), ['authorize', 'open', 'authorize', undefined]);
+    assert.deepEqual(requests.map(item => item.operation), ['authorize', 'open', 'authorize', 'authorize', undefined]);
     assert.ok(requests.every(item => item.sessionId === 'automation-app-session'));
-    assert.ok(requests.every(item => !(item.payload as Record<string, unknown> | undefined)?.scope));
+    assert.deepEqual(requests[3]?.payload, { application: 'com.apple.TextEdit', scope: 'session' });
+    assert.ok(requests.every(item => (item.payload as Record<string, unknown> | undefined)?.scope !== 'always'));
 
     const question = session.uiContext!.select('Choose a plan', ['A', 'B']);
     void question.catch(() => {});

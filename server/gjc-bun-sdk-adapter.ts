@@ -9,6 +9,7 @@ import { activateModelProfile } from '@gajae-code/coding-agent/config/model-prof
 import { resolveModelRoleValue } from '@gajae-code/coding-agent/config/model-resolver';
 import { Settings } from '@gajae-code/coding-agent/config/settings';
 import { AuthStorage } from '@gajae-code/coding-agent/session/auth-storage';
+import { buildAccountInventorySnapshot } from '@gajae-code/coding-agent/session/account-inventory';
 import { SessionDisposalIncompleteError } from '@gajae-code/coding-agent/session/agent-session';
 import { parseSessionEntries, SessionManager, type SessionEntry } from '@gajae-code/coding-agent/session/session-manager';
 import { MemorySessionStorage } from '@gajae-code/coding-agent/session/session-storage';
@@ -19,12 +20,13 @@ import { generateSessionTitle } from '@gajae-code/coding-agent/utils/title-gener
 import { getSupportedEfforts } from '@gajae-code/ai/model-thinking';
 
 import { parseGjcGoalCommand, type GjcGoalCommand, type GjcGoalSnapshot } from '../shared/gjc-goal.js';
+import type { ProviderQuotaSnapshot } from '../shared/providerQuota.js';
 
 import { appendImagesInputTag } from './shared/image-attachments.js';
 import { GjcBunOAuthController, type GjcBunOAuthControllerOptions, type GjcOAuthActivitySnapshot } from './gjc-bun-oauth-controller.js';
 import { GJC_APP_BUILTIN_COMMAND_NAMES } from './gjc-command-surface.generated.js';
 import type { GjcWorkerOAuthRuntime, GjcWorkerRuntime, GjcWorkerWriter } from './gjc-worker.js';
-import type { GjcWorkerActivity } from './gjc-worker-protocol.js';
+import type { GjcWorkerActivity, JsonObject } from './gjc-worker-protocol.js';
 import { GjcBunAskController } from './gjc-bun-ask-controller.js';
 import { GjcCleanupUnconfirmedError, isGjcCleanupUnconfirmedError } from './gjc-cleanup-error.js';
 import { isVerifiedSdkPatch, type VerifiedSdkPatch } from './gjc-runtime-manifest.js';
@@ -33,10 +35,12 @@ import { createGjcPermissionProvider, type GjcPermissionProvider } from './gjc-b
 import { forwardPromptTerminal, forwardSdkEvent, normalizeBuiltinCommandStdout, type SdkRunState } from './gjc-bun-sdk-events.js';
 import { parseGjcRunPermissions, type GjcRunPermissions } from './gjc-permission-policy.js';
 import { GjcModelResolutionError } from './gjc-model-resolution.js';
+import { buildProviderQuotaSnapshot, type ProviderQuotaInventoryRow, type ProviderUsageReportLike } from './gjc-provider-quota.js';
 import {
-  GJC_EGO_BROWSER_INSTRUCTIONS,
+  GJC_EGO_BROWSER_UNAVAILABLE_INSTRUCTIONS,
+  buildGjcEgoBrowserInstructions,
   GjcAsideUnavailableError,
-  GjcEgoUnavailableError,
+  isEgoSupportedPlatform,
   isGjcBrowserBackend,
   probeEgoBrowserCli,
   type EgoBrowserCliProbe,
@@ -128,6 +132,8 @@ export type GjcBunSdkAdapterOptions = {
    * replaceable so tests never depend on an ego lite installation.
    */
   probeEgoBrowserCli?: () => EgoBrowserCliProbe;
+  /** Platform seam for cross-platform browser-backend tests; production defaults to process.platform. */
+  platform?: NodeJS.Platform;
 };
 
 export type GjcSdkActivitySnapshot = Readonly<{
@@ -262,6 +268,10 @@ export type GjcResolvedBrowserBackend = Readonly<{
   exposesBuiltinTool: boolean;
   /** A routing block the *app* appends to the system prompt; the runtime appends its own for Aside. */
   appInstructions?: string;
+  /** Whether the probe found a runnable Ego CLI; false keeps chat alive but removes browser work. */
+  egoReady?: boolean;
+  /** The exact absolute path selected by the probe, for diagnostics/tests only. */
+  egoCliPath?: string;
 }>;
 
 /**
@@ -271,32 +281,47 @@ export type GjcResolvedBrowserBackend = Readonly<{
  * `builtin` explicitly selects the runtime's built-in browser mode, preventing
  * a user-level runtime Aside setting from silently changing the app selection.
  * `aside` validates the runtime's CLI first, then writes its routing setting.
- * `ego` validates the app's own `ego-browser` probe, keeps the runtime on
- * `native` so no Aside routing is injected, disables the runtime's built-in
- * browser tool outright and returns the app-owned routing block. An explicit
- * Aside or ego choice with no CLI is refused up front with a fixed code rather
- * than falling back to Built-in. An absent option preserves the runtime setting
- * for internal compatibility only; server-created runs always supply an
- * explicit application choice.
+ * `ego` keeps the runtime on `native` so no Aside routing is injected, disables
+ * the runtime's built-in browser tool outright and returns either the pinned
+ * routing block or a browser-unavailable block. A missing Ego CLI never bricks
+ * ordinary chat and never falls back to another browser.
  */
 export function applyGjcBrowserBackend(
   settings: Pick<Settings, 'get' | 'override'>,
   requested: GjcBrowserBackend | undefined,
   probe: () => AsideCliProbe,
   probeEgo: () => EgoBrowserCliProbe = probeEgoBrowserCli,
+  options: { builtinBrowserAvailable?: boolean; platform?: NodeJS.Platform } = {},
 ): GjcResolvedBrowserBackend {
   if (requested === 'builtin') {
     settings.override('browser.backend', 'native');
+    if (options.builtinBrowserAvailable === false) settings.override('browser.enabled', false);
   } else if (requested === 'aside') {
     const found = probe();
     if (!found.ok) throw new GjcAsideUnavailableError(found.searched);
     settings.override('browser.backend', 'aside');
   } else if (requested === 'ego') {
-    const found = probeEgo();
-    if (!found.ok) throw new GjcEgoUnavailableError(found.searched);
     settings.override('browser.backend', 'native');
     settings.override('browser.enabled', false);
-    return { id: 'ego', exposesBuiltinTool: false, appInstructions: GJC_EGO_BROWSER_INSTRUCTIONS };
+    // Ego Lite is a macOS-only integration. Keep the session usable on
+    // self-hosted Linux/other platforms, but never probe or route a CLI there.
+    if (!isEgoSupportedPlatform(options.platform ?? process.platform)) {
+      return {
+        id: 'ego', exposesBuiltinTool: false, egoReady: false,
+        appInstructions: GJC_EGO_BROWSER_UNAVAILABLE_INSTRUCTIONS,
+      };
+    }
+    const found = probeEgo();
+    if (!found.ok) {
+      return {
+        id: 'ego', exposesBuiltinTool: false, egoReady: false,
+        appInstructions: GJC_EGO_BROWSER_UNAVAILABLE_INSTRUCTIONS,
+      };
+    }
+    return {
+      id: 'ego', exposesBuiltinTool: false, egoReady: true, egoCliPath: found.path,
+      appInstructions: buildGjcEgoBrowserInstructions(found.path),
+    };
   }
   const { id, exposesBuiltinTool } = resolveBrowserBackend(settings);
   return { id, exposesBuiltinTool };
@@ -764,6 +789,54 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
     return { models };
   }
 
+  /**
+   * Normalized provider quota for the app's ambient status surfaces.
+   *
+   * Reads the same structured source `/usage` reads — the runtime's account
+   * inventory over `AuthStorage`'s `UsageReport` cache — and refreshes it
+   * through `AuthStorage.fetchUsageReports`, which already owns the
+   * per-credential TTL, the last-good retention and the in-flight coalescing.
+   * `/usage` keeps its own cache-only contract and is untouched.
+   *
+   * Only the normalized DTO leaves this method. Credentials, tokens, account
+   * identities and raw provider responses stay inside the worker.
+   */
+  async providerQuota(): Promise<JsonObject> {
+    this.#assertAdmission();
+    // Concurrent callers (several browser tabs, a focus refetch and a poll)
+    // must not fan out N probes at the provider's rate limiter.
+    const inFlight = this.#providerQuotaInFlight;
+    if (inFlight) return inFlight;
+    const request = this.#withOperation(() => this.#providerQuota()).finally(() => {
+      if (this.#providerQuotaInFlight === request) this.#providerQuotaInFlight = undefined;
+    });
+    this.#providerQuotaInFlight = request;
+    return request;
+  }
+
+  #providerQuotaInFlight: Promise<JsonObject> | undefined;
+
+  async #providerQuota(): Promise<JsonObject> {
+    const snapshot = buildAccountInventorySnapshot({
+      authStorage: this.authStorage,
+      modelRegistry: this.modelRegistry,
+    });
+    // Every optional field is emitted by conditional spread, so the snapshot
+    // holds no `undefined` member and is genuinely JSON; only its static type
+    // carries the optionality the protocol's JsonObject cannot express.
+    const quota: ProviderQuotaSnapshot = await buildProviderQuotaSnapshot({
+      rows: snapshot.rows as readonly ProviderQuotaInventoryRow[],
+      fetchProviderUsage: async (provider) => await this.authStorage.fetchUsageReports({
+        provider,
+        baseUrlResolver: (candidate: string) => this.modelRegistry.getProviderBaseUrl(candidate),
+        // Provider and account labels must not reach the worker's log sink on
+        // behalf of a passive status widget.
+        logDetails: false,
+      }) as readonly ProviderUsageReportLike[] | null,
+    });
+    return quota as unknown as JsonObject;
+  }
+
   spawnGjc(message: string, options: Record<string, unknown>, writer: GjcWorkerWriter): Promise<void> & { abortHandle?: string; processId?: number } {
     this.#assertAdmission();
     if (isAppOAuthCommand(message)) throw new Error(FAILURE);
@@ -1040,15 +1113,16 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
       // sessions, and the clone keeps their project settings and overrides isolated.
       const settings = await globalSettings.cloneForCwd(config.cwd);
       applyGjcToolSettingsPolicy(settings);
+      const builtinBrowserAvailable = config.builtinBrowserAvailable === true
+        && Boolean(config.appSessionId);
       const browserBackend = applyGjcBrowserBackend(
         settings,
         config.browserBackend,
         this.options.probeAsideCli ?? probeAsideCli,
         this.options.probeEgoBrowserCli ?? probeEgoBrowserCli,
+        { builtinBrowserAvailable, platform: this.options.platform ?? process.platform },
       );
-      const builtinBrowserAvailable = config.builtinBrowserAvailable === true
-        && browserBackend.exposesBuiltinTool
-        && Boolean(config.appSessionId);
+      const trustedBuiltinBrowserAvailable = builtinBrowserAvailable && browserBackend.exposesBuiltinTool;
       const goalScope = config.appSessionId && config.goalOwner
         ? { appSessionId: config.appSessionId, owner: config.goalOwner, cwd: await realpath(config.cwd),
             projectPath: await realpath(typeof options.projectPath === 'string' ? options.projectPath : config.cwd) }
@@ -1097,7 +1171,7 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
             ? { credentialSelector: resolvedCredential.credentialSelector }
             : {}),
           toolNames: [...new Set([...config.toolNames, 'ask', ...(goalEnabled ? ['goal'] : [])])]
-            .filter((name) => name !== 'browser' || builtinBrowserAvailable),
+            .filter((name) => name !== 'browser' || trustedBuiltinBrowserAvailable),
           spawns: config.spawns,
           goalToolAllowedOps: goalEnabled ? GJC_GOAL_MODEL_OPERATIONS : [],
           bashAllowedPrefixes: config.bashPolicy.allowedPrefixes,
@@ -1109,7 +1183,7 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
               askController.uiContext,
               this.options.automationBridge,
               config.permissions?.mode,
-            ), browserBackend, builtinBrowserAvailable)),
+            ), browserBackend, trustedBuiltinBrowserAvailable)),
           } : {}),
         };
         if (config.toolNames.some((name) => GJC_APP_DELEGATION_TOOL_NAMES.includes(name as 'task' | 'subagent'))) {

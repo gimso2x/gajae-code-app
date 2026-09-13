@@ -270,7 +270,7 @@ pub(crate) fn server_failed(app: &AppHandle, message: &str) -> bool {
     }
 }
 
-pub(crate) async fn show_manual_applying(app: &AppHandle) -> Result<(), String> {
+pub(crate) async fn show_manual_preparing(app: &AppHandle) -> Result<(), String> {
     let gate = app.state::<LaunchGate>();
     gate.phase
         .compare_exchange(
@@ -280,7 +280,7 @@ pub(crate) async fn show_manual_applying(app: &AppHandle) -> Result<(), String> 
             Ordering::Acquire,
         )
         .map_err(|_| "Native launch state changed before restart.".to_owned())?;
-    show_confirmed(app, Screen::Applying).await
+    show_confirmed(app, Screen::Preparing).await
 }
 pub(crate) fn cancel_manual_display(app: &AppHandle, return_url: &tauri::Url) {
     let gate = app.state::<LaunchGate>();
@@ -565,17 +565,7 @@ async fn run_install(
 }
 
 fn stored_port_is_unoccupied(root: &Path) -> Result<(), String> {
-    let port = crate::desktop_origin::DesktopOrigin::load(root.to_owned())?.requested_port();
-    if port == 0 {
-        return Ok(());
-    }
-    match std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-        Duration::from_millis(250),
-    ) {
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => Ok(()),
-        _ => Err("The desktop origin is occupied or its previous owner is uncertain.".into()),
-    }
+    crate::desktop_origin::DesktopOrigin::load(root.to_owned())?.ensure_port_available()
 }
 
 pub(crate) async fn revalidate_successor(app: &AppHandle) -> Result<Option<Target>, String> {

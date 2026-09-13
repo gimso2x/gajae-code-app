@@ -132,7 +132,7 @@ test('available card is directly above Settings, polite, non-modal, and never st
   assert.deepEqual(writes(commands), []);
 });
 
-test('Update explicitly downloads then requests one target-bound restart; duplicate cross-mount clicks coalesce', async () => {
+test('Update downloads only; a second click explicitly requests a target-bound restart', async () => {
   let snapshot = native();
   const commands: DesktopUpdateCommand[] = [];
   const waiting = deferred<unknown>();
@@ -151,6 +151,8 @@ test('Update explicitly downloads then requests one target-bound restart; duplic
   assert.ok(screen.getAllByRole('button', { name: english.desktopUpdate.updating }).every((button) => (button as HTMLButtonElement).disabled));
   snapshot = { ...snapshot, phase: 'ready' };
   await act(async () => { waiting.resolve(snapshot); });
+  assert.deepEqual(writes(commands), [{ action: 'download', targetId: snapshot.targetId }]);
+  await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: english.desktopUpdate.restartToInstall })[0]); });
   assert.deepEqual(writes(commands), [
     { action: 'download', targetId: snapshot.targetId }, { action: 'restart', targetId: snapshot.targetId },
   ]);
@@ -343,7 +345,32 @@ test('owner preserves an accepted download across collapsed/expanded swaps witho
   assert.equal(commands.filter((command) => command.action === 'status').length, 1);
   snapshot = { ...snapshot, phase: 'ready' };
   await act(async () => { waiting.resolve(snapshot); });
+  assert.deepEqual(writes(commands), [{ action: 'download', targetId: snapshot.targetId }]);
+  await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: english.desktopUpdate.restartToInstall })[0]); });
   assert.deepEqual(writes(commands), [
     { action: 'download', targetId: snapshot.targetId }, { action: 'restart', targetId: snapshot.targetId },
   ]);
+});
+
+
+test('native abort reasons survive a remount and polling without replaying restart', async () => {
+  for (const [language, translations] of [['en', english], ['ko', korean]] as const) {
+    for (const [reason, message] of [
+      ['updater_runtime_busy', translations.desktopUpdate.updateErrors.busy],
+      ['updater_runtime_unknown', translations.desktopUpdate.reasons.restartUnknown],
+      ['updater_backend_timeout', translations.desktopUpdate.reasons.restartTimeout],
+    ]) {
+      const commands: DesktopUpdateCommand[] = [];
+      // A new document reads native status after the old restart HTTP waiter vanished.
+      inject(async command => { commands.push(command); return native({ phase: 'ready', reason }); });
+      const first = await mount('notice', language);
+      assert.ok(screen.getByRole('status').contains(screen.getByText(message)));
+      first.unmount();
+      const second = await mount('notice', language);
+      await flush();
+      assert.ok(screen.getByRole('status').contains(screen.getByText(message)));
+      assert.deepEqual(writes(commands), []);
+      second.unmount();
+    }
+  }
 });

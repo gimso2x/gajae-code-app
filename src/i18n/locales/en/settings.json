@@ -8,7 +8,7 @@
     "restartToInstall": "Restart to install",
     "restarting": "Restarting…",
     "readyHelp": "The update is downloaded and verified. Restarting closes the app briefly and reopens it as {{version}}. Save your work first.",
-    "manualHelp": "Click Update to download and request a safe restart. Checks never download or install updates.",
+    "manualHelp": "Click Update to download. When ready, choose Restart to install. Checks never download or install updates.",
     "awaitingOperation": "Waiting for the previous native operation to finish. Do not retry yet.",
     "targetVersion": "Version {{version}}",
     "showDetails": "Show desktop update details: {{version}} — {{status}}",
@@ -21,6 +21,9 @@
       "failed": "The update could not complete. Check its status, then try again."
     },
     "reasons": {
+      "restartUnknown": "The app could not confirm that it is safe to restart. No automatic retry was scheduled.",
+      "restartTimeout": "Restart preparation timed out. The app was not automatically retried.",
+      "shellUnverified": "The shell process could not be verified as finished. Save your work, quit and reopen the app, then try again. You can also use the manual installer.",
       "discoveryFailed": "Release discovery failed.",
       "cacheInvalid": "The cached update failed validation.",
       "preparationCancelled": "Update preparation was cancelled.",
@@ -126,7 +129,7 @@
   "automation": {
     "browserBackend": {
       "title": "Browser",
-      "description": "Which browser GJC sessions started here can control.",
+      "description": "Which browser GJC sessions started here can control. This does not change manual built-in launches or chat links.",
       "label": "Browser backend",
       "builtin": "Built-in",
       "aside": "Aside (Experimental)",
@@ -135,14 +138,22 @@
       "asideNote": "Requires the Aside CLI you installed yourself (~/.local/bin/aside or the Aside CLI app). While Aside is selected, a session that cannot find it fails to start instead of falling back to Built-in. Choose Built-in only where it is available.",
       "ego": "ego lite (Experimental)",
       "egoDescription": "ego lite browser: the built-in browser tool is hidden and browser work runs through your installed ego-browser CLI in your own logged-in browser, in its own Space.",
-      "egoNote": "Requires ego lite you installed yourself (https://lite.ego.app; onboarding registers ~/.local/bin/ego-browser) and its ego-browser skill. While ego lite is selected, a session that cannot find the CLI fails to start instead of falling back to Built-in. Choose Built-in only where it is available.",
+      "egoNote": "Requires ego lite you installed yourself (https://lite.ego.app; onboarding registers ~/.local/bin/ego-browser) and its ego-browser skill. If Ego is not ready, ordinary chat continues but browser work is unavailable; the app never falls back to another browser or computer automation.",
+      "readiness": "Readiness",
+      "readinessReady": "Ready",
+      "readinessNotReady": "Not ready",
+      "readinessUnknown": "Unknown",
+      "testConnection": "Test connection",
+      "testingConnection": "Testing connection…",
+      "connectionPassed": "ego-browser connected",
+      "connectionFailed": "ego-browser connection test failed.",
       "saveFailed": "The browser backend could not be saved."
     },
     "builtinBrowser": {
       "title": "Built-in browser",
-      "description": "Open the browser controlled by the supported desktop app.",
+      "description": "Open the app's built-in browser window independently of the selected GJC backend.",
       "label": "Built-in browser",
-      "note": "Available only in the macOS desktop app. One browser owner remains active until it is closed.",
+      "note": "Available only in the macOS desktop app. One browser owner remains active until it is closed. HTTP(S) chat links always open in your external browser.",
       "open": "Open browser",
       "opened": "Opened the built-in browser.",
       "failed": "The built-in browser could not be opened.",
