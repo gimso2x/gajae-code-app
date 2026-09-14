@@ -75,3 +75,19 @@ test('Korean goal controls explain the inherited delegation policy', async () =>
   assert.ok(view.getByText('토큰 1,234개'));
   assert.match(view.getByText(/위임한 작업도/).textContent!, /같은 모델과 권한/);
 });
+test('goal controls protect mobile responsiveness with full-width objective and non-shrinking controls', () => {
+  const view = render(<GoalControls {...initial} />);
+  const section = view.container.querySelector('section');
+  assert.ok(section?.classList.contains('shrink-0'), 'section root must not shrink inside flex column');
+
+  const objective = view.getByText('Finish the integration');
+  assert.ok(objective.classList.contains('w-full'), 'objective must take full width on mobile viewports');
+  assert.ok(objective.classList.contains('basis-full'), 'objective must have basis-full to prevent flex wrapping squash');
+  assert.ok(objective.classList.contains('sm:flex-1'), 'objective must expand horizontally on desktop');
+
+  const status = view.getByRole('status');
+  assert.ok(status.classList.contains('shrink-0'), 'status badge must not shrink');
+
+  const tokens = view.getByText('1,234 tokens');
+  assert.ok(tokens.classList.contains('shrink-0'), 'token counter must not shrink');
+});
