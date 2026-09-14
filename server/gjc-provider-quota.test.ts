@@ -13,7 +13,11 @@ import { parseProviderQuotaSnapshot, representativeRemainingPercent, type Provid
 
 import {
   buildProviderQuotaSnapshot,
+  fetchGimso2xProxyUsageReports,
   normalizeQuotaWindows,
+  parseAntigravityQuotaSummary,
+  parseCliProxyAuthFiles,
+  parseZaiQuotaLimits,
   type ProviderQuotaInventoryRow,
   type ProviderUsageReportLike,
 } from './gjc-provider-quota.js';
@@ -433,4 +437,143 @@ test('no connected provider produces no entries at all', async () => {
   const snapshot = await buildProviderQuotaSnapshot({ rows: [], fetchProviderUsage: async () => [], now: NOW });
   assert.deepEqual(snapshot.providers, []);
   assert.equal(snapshot.fetchedAt, new Date(NOW).toISOString());
+});
+
+test('parseCliProxyAuthFiles extracts claude and codex rate limit signals', () => {
+  const parsed = parseCliProxyAuthFiles([
+    {
+      name: 'claude-test.json',
+      provider: 'claude',
+      quota: {
+        signals: {
+          'Anthropic-Ratelimit-Unified-5h-Utilization': '0.25',
+          'Anthropic-Ratelimit-Unified-5h-Reset': '1789359600',
+          'Anthropic-Ratelimit-Unified-7d-Utilization': '0.5',
+          'Anthropic-Ratelimit-Unified-7d-Reset': '1789419600',
+        },
+      },
+    },
+    {
+      name: 'codex-test.json',
+      provider: 'codex',
+      quota: {
+        signals: {
+          'X-Codex-Primary-Used-Percent': '10',
+          'X-Codex-Primary-Reset-At': '1789255398',
+          'X-Codex-Secondary-Used-Percent': '20',
+          'X-Codex-Secondary-Reset-At': '1789807002',
+        },
+      },
+    },
+  ]);
+
+  assert.equal(parsed.claudeLimits.length, 2);
+  assert.equal(parsed.claudeLimits[0]?.id, 'claude:5h');
+  assert.equal(parsed.claudeLimits[0]?.amount?.usedFraction, 0.25);
+  assert.equal(parsed.claudeLimits[1]?.id, 'claude:7d');
+  assert.equal(parsed.claudeLimits[1]?.amount?.usedFraction, 0.5);
+
+  assert.equal(parsed.codexLimits.length, 2);
+  assert.equal(parsed.codexLimits[0]?.id, 'codex:5h');
+  assert.equal(parsed.codexLimits[0]?.amount?.used, 10);
+  assert.equal(parsed.codexLimits[1]?.id, 'codex:weekly');
+  assert.equal(parsed.codexLimits[1]?.amount?.used, 20);
+});
+
+test('parseZaiQuotaLimits parses tokens limits for 5h and weekly windows', () => {
+  const limits = parseZaiQuotaLimits({
+    success: true,
+    data: {
+      limits: [
+        { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 5, nextResetTime: 1789358674167 },
+        { type: 'TOKENS_LIMIT', unit: 6, number: 1, percentage: 70, nextResetTime: 1789571449985 },
+      ],
+    },
+  });
+
+  assert.equal(limits.length, 2);
+  assert.equal(limits[0]?.id, 'zai:5h');
+  assert.equal(limits[0]?.amount?.usedFraction, 0.05);
+  assert.equal(limits[1]?.id, 'zai:weekly');
+  assert.equal(limits[1]?.amount?.usedFraction, 0.7);
+});
+
+test('parseAntigravityQuotaSummary extracts gemini 5h and weekly limit buckets', () => {
+  const limits = parseAntigravityQuotaSummary(JSON.stringify({
+    groups: [
+      {
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.85, resetTime: '2026-09-14T05:13:28Z' },
+          { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.75, resetTime: '2026-09-18T00:45:14Z' },
+        ],
+      },
+    ],
+  }));
+
+  assert.equal(limits.length, 2);
+  assert.equal(limits[0]?.id, 'gemini:5h');
+  assert.equal(limits[0]?.amount?.remainingFraction, 0.85);
+  assert.equal(limits[1]?.id, 'gemini:weekly');
+  assert.equal(limits[1]?.amount?.remainingFraction, 0.75);
+});
+
+test('fetchGimso2xProxyUsageReports returns composite report with all limits for gimso2xproxy', async () => {
+  const fakeFetch: typeof fetch = async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes('/v0/management/auth-files')) {
+      return new Response(JSON.stringify({
+        files: [
+          {
+            name: 'claude.json',
+            provider: 'claude',
+            quota: {
+              signals: {
+                'Anthropic-Ratelimit-Unified-5h-Utilization': '0.1',
+              },
+            },
+          },
+          {
+            name: 'codex.json',
+            provider: 'codex',
+            quota: {
+              signals: {
+                'X-Codex-Primary-Used-Percent': '0',
+              },
+            },
+          },
+        ],
+      }), { status: 200 });
+    }
+    if (urlStr.includes('api.z.ai')) {
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          limits: [
+            { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 1, nextResetTime: 1789358674167 },
+          ],
+        },
+      }), { status: 200 });
+    }
+    return new Response('Not found', { status: 404 });
+  };
+
+  const reports = await fetchGimso2xProxyUsageReports('gimso2xproxy', {
+    managementKey: 'fake-key',
+    zaiApiKey: 'fake-zai-key',
+    fetchFn: fakeFetch,
+  });
+
+  assert.ok(reports && reports.length === 1);
+  const report = reports[0]!;
+  assert.equal(report.provider, 'gimso2xproxy');
+  assert.equal(report.limits?.length, 3);
+  assert.deepEqual(report.limits?.map((l) => l.id), ['claude:5h', 'codex:5h', 'zai:5h']);
+
+  const otherReports = await fetchGimso2xProxyUsageReports('opencodex', {
+    managementKey: 'fake-key',
+    zaiApiKey: 'fake-zai-key',
+    fetchFn: fakeFetch,
+  });
+  assert.equal(otherReports, undefined);
 });

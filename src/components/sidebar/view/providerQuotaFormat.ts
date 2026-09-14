@@ -100,6 +100,6 @@ export function quotaRingPercent(entry: ProviderQuotaEntry): number | undefined 
 /** Which logo the app owns for a runtime provider id; `null` means use a monogram. */
 export function quotaProviderLogoId(provider: string): 'claude' | 'codex' | null {
   if (provider === 'anthropic') return 'claude';
-  if (provider === 'openai-codex' || provider === 'openai-codex-device' || provider === 'opencodex') return 'codex';
+  if (provider === 'openai-codex' || provider === 'openai-codex-device') return 'codex';
   return null;
 }

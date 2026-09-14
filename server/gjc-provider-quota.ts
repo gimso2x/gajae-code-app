@@ -182,15 +182,20 @@ type Observation = {
   windows: ProviderQuotaWindow[];
   fetchedAt: number;
   plan?: string;
+  accounts?: number;
   stale: boolean;
 };
 
 function observationOf(report: ProviderUsageReportLike, fallbackFetchedAt: number, stale: boolean): Observation {
   const plan = planOf(report);
+  const accounts = typeof report.metadata?.accounts === 'number' && report.metadata.accounts > 0
+    ? report.metadata.accounts
+    : undefined;
   return {
     windows: normalizeQuotaWindows(report),
     fetchedAt: finite(report.fetchedAt) ?? fallbackFetchedAt,
     ...(plan === undefined ? {} : { plan }),
+    ...(accounts === undefined ? {} : { accounts }),
     stale,
   };
 }
@@ -275,7 +280,7 @@ function entryOf(
     provider: group.provider,
     providerName: providerQuotaDisplayName(group.provider),
     ...(observation?.plan === undefined ? {} : { plan: observation.plan }),
-    accounts: group.activeRows.length > 0 ? group.activeRows.length : group.rows.length,
+    accounts: observation?.accounts ?? (group.activeRows.length > 0 ? group.activeRows.length : group.rows.length),
     windows: observation?.windows ?? [],
     status,
     ...(reason === undefined ? {} : { reason }),
@@ -360,4 +365,353 @@ const STATUS_ORDER: Readonly<Record<ProviderQuotaStatus, number>> = {
 function compareForDisplay(left: ProviderQuotaEntry, right: ProviderQuotaEntry): number {
   const byStatus = STATUS_ORDER[left.status] - STATUS_ORDER[right.status];
   return byStatus !== 0 ? byStatus : left.provider.localeCompare(right.provider);
+}
+export type CliProxyAuthFile = {
+  name?: string;
+  account?: string;
+  email?: string;
+  provider?: string;
+  auth_index?: string;
+  project_id?: string;
+  disabled?: boolean;
+  quota?: {
+    observed_at?: string;
+    signals?: Record<string, string>;
+  };
+};
+
+export function parseCliProxyAuthFiles(files: readonly CliProxyAuthFile[]): {
+  claudeLimits: ProviderUsageLimitLike[];
+  codexLimits: ProviderUsageLimitLike[];
+} {
+  const claudeLimits: ProviderUsageLimitLike[] = [];
+  const codexLimits: ProviderUsageLimitLike[] = [];
+
+  for (const file of files) {
+    const signals = file.quota?.signals;
+    if (!signals || typeof signals !== 'object') continue;
+
+    if (file.provider === 'claude' && claudeLimits.length === 0) {
+      const util5hStr = signals['Anthropic-Ratelimit-Unified-5h-Utilization'];
+      const reset5hStr = signals['Anthropic-Ratelimit-Unified-5h-Reset'];
+      const util7dStr = signals['Anthropic-Ratelimit-Unified-7d-Utilization'];
+      const reset7dStr = signals['Anthropic-Ratelimit-Unified-7d-Reset'];
+
+      const util5h = util5hStr !== undefined ? parseFloat(util5hStr) : NaN;
+      const reset5h = reset5hStr !== undefined ? parseInt(reset5hStr, 10) : NaN;
+      const util7d = util7dStr !== undefined ? parseFloat(util7dStr) : NaN;
+      const reset7d = reset7dStr !== undefined ? parseInt(reset7dStr, 10) : NaN;
+
+      if (Number.isFinite(util5h)) {
+        claudeLimits.push({
+          id: 'claude:5h',
+          label: 'Claude (5h)',
+          window: {
+            id: '5h',
+            label: 'Claude (5h)',
+            resetsAt: Number.isFinite(reset5h) ? reset5h * 1000 : undefined,
+          },
+          amount: {
+            usedFraction: util5h,
+            remainingFraction: Math.max(0, 1 - util5h),
+          },
+        });
+      }
+      if (Number.isFinite(util7d)) {
+        claudeLimits.push({
+          id: 'claude:7d',
+          label: 'Claude (7d)',
+          window: {
+            id: '7d',
+            label: 'Claude (7d)',
+            resetsAt: Number.isFinite(reset7d) ? reset7d * 1000 : undefined,
+          },
+          amount: {
+            usedFraction: util7d,
+            remainingFraction: Math.max(0, 1 - util7d),
+          },
+        });
+      }
+    }
+
+    if (file.provider === 'codex' && codexLimits.length === 0) {
+      const primUsedStr = signals['X-Codex-Primary-Used-Percent'];
+      const primResetStr = signals['X-Codex-Primary-Reset-At'];
+      const secUsedStr = signals['X-Codex-Secondary-Used-Percent'];
+      const secResetStr = signals['X-Codex-Secondary-Reset-At'];
+
+      const primUsed = primUsedStr !== undefined ? parseFloat(primUsedStr) : NaN;
+      const primReset = primResetStr !== undefined ? parseInt(primResetStr, 10) : NaN;
+      const secUsed = secUsedStr !== undefined ? parseFloat(secUsedStr) : NaN;
+      const secReset = secResetStr !== undefined ? parseInt(secResetStr, 10) : NaN;
+
+      if (Number.isFinite(primUsed)) {
+        codexLimits.push({
+          id: 'codex:5h',
+          label: 'Codex (5h)',
+          window: {
+            id: '5h',
+            label: 'Codex (5h)',
+            resetsAt: Number.isFinite(primReset) ? primReset * 1000 : undefined,
+          },
+          amount: {
+            used: primUsed,
+            unit: 'percent',
+            remainingFraction: Math.max(0, (100 - primUsed) / 100),
+          },
+        });
+      }
+      if (Number.isFinite(secUsed)) {
+        codexLimits.push({
+          id: 'codex:weekly',
+          label: 'Codex (Weekly)',
+          window: {
+            id: 'weekly',
+            label: 'Codex (Weekly)',
+            resetsAt: Number.isFinite(secReset) ? secReset * 1000 : undefined,
+          },
+          amount: {
+            used: secUsed,
+            unit: 'percent',
+            remainingFraction: Math.max(0, (100 - secUsed) / 100),
+          },
+        });
+      }
+    }
+  }
+
+  return { claudeLimits, codexLimits };
+}
+
+export function parseZaiQuotaLimits(zaiPayload: unknown): ProviderUsageLimitLike[] {
+  if (!zaiPayload || typeof zaiPayload !== 'object') return [];
+  const payload = zaiPayload as { success?: boolean; data?: { limits?: Array<Record<string, unknown>> } };
+  if (payload.success !== true || !Array.isArray(payload.data?.limits)) return [];
+
+  const limits: ProviderUsageLimitLike[] = [];
+  for (const item of payload.data.limits) {
+    const type = item.type;
+    const unit = item.unit;
+    const num = item.number;
+    const percentage = typeof item.percentage === 'number' ? item.percentage : parseFloat(String(item.percentage));
+    const nextReset = typeof item.nextResetTime === 'number' ? item.nextResetTime : parseInt(String(item.nextResetTime), 10);
+
+    if (type === 'TOKENS_LIMIT' && Number.isFinite(percentage)) {
+      if (num === 5 || unit === 3) {
+        limits.push({
+          id: 'zai:5h',
+          label: 'Z.ai (5h)',
+          window: {
+            id: '5h',
+            label: 'Z.ai (5h)',
+            resetsAt: Number.isFinite(nextReset) ? nextReset : undefined,
+          },
+          amount: {
+            usedFraction: Math.min(1, Math.max(0, percentage / 100)),
+            remainingFraction: Math.min(1, Math.max(0, (100 - percentage) / 100)),
+          },
+        });
+      } else if (num === 1 || unit === 6) {
+        limits.push({
+          id: 'zai:weekly',
+          label: 'Z.ai (Weekly)',
+          window: {
+            id: 'weekly',
+            label: 'Z.ai (Weekly)',
+            resetsAt: Number.isFinite(nextReset) ? nextReset : undefined,
+          },
+          amount: {
+            usedFraction: Math.min(1, Math.max(0, percentage / 100)),
+            remainingFraction: Math.min(1, Math.max(0, (100 - percentage) / 100)),
+          },
+        });
+      }
+    }
+  }
+  return limits;
+}
+export function parseAntigravityQuotaSummary(bodyStr: string): ProviderUsageLimitLike[] {
+  try {
+    const data = JSON.parse(bodyStr) as {
+      groups?: Array<{ displayName?: string; buckets?: Array<Record<string, unknown>> }>;
+    };
+    const limits: ProviderUsageLimitLike[] = [];
+    for (const group of data.groups ?? []) {
+      for (const bucket of group.buckets ?? []) {
+        const remainingFraction = typeof bucket.remainingFraction === 'number'
+          ? bucket.remainingFraction
+          : typeof bucket.remainingFraction === 'string'
+            ? parseFloat(bucket.remainingFraction)
+            : NaN;
+        if (!Number.isFinite(remainingFraction)) continue;
+
+        const window = String(bucket.window ?? '').toLowerCase();
+        const resetTime = typeof bucket.resetTime === 'string' ? Date.parse(bucket.resetTime) : NaN;
+        const resetsAt = Number.isFinite(resetTime) ? resetTime : undefined;
+
+        if (window === '5h' || bucket.bucketId === 'gemini-5h') {
+          limits.push({
+            id: 'gemini:5h',
+            label: 'Gemini (5h)',
+            window: {
+              id: '5h',
+              label: 'Gemini (5h)',
+              resetsAt,
+            },
+            amount: {
+              remainingFraction,
+              usedFraction: Math.max(0, 1 - remainingFraction),
+            },
+          });
+        } else if (window === 'weekly' || bucket.bucketId === 'gemini-weekly') {
+          limits.push({
+            id: 'gemini:weekly',
+            label: 'Gemini (Weekly)',
+            window: {
+              id: 'weekly',
+              label: 'Gemini (Weekly)',
+              resetsAt,
+            },
+            amount: {
+              remainingFraction,
+              usedFraction: Math.max(0, 1 - remainingFraction),
+            },
+          });
+        }
+      }
+    }
+    return limits;
+  } catch {
+    return [];
+  }
+}
+
+export type Gimso2xProxyQuotaOptions = {
+  proxyBaseUrl?: string;
+  managementKey?: string;
+  zaiApiKey?: string;
+  fetchFn?: typeof fetch;
+};
+
+export async function fetchGimso2xProxyUsageReports(
+  provider: string,
+  options: Gimso2xProxyQuotaOptions = {},
+): Promise<readonly ProviderUsageReportLike[] | undefined> {
+  const proxyBaseUrl = options.proxyBaseUrl
+    || process.env.GIMSO2XPROXY_BASE_URL
+    || 'https://proxy.gimso2x.com';
+  const managementKey = options.managementKey
+    || process.env.GIMSO2XPROXY_MANAGEMENT_KEY
+    || process.env.CLIPROXYAPI_MANAGEMENT_KEY
+    || '';
+  const zaiApiKey = options.zaiApiKey
+    || process.env.GIMSO2XPROXY_ZAI_API_KEY
+    || process.env.ZAI_API_KEY
+    || '';
+  const fetchFn = options.fetchFn || globalThis.fetch;
+
+  if (provider !== 'gimso2xproxy') {
+    return undefined;
+  }
+
+  let claudeLimits: ProviderUsageLimitLike[] = [];
+  let codexLimits: ProviderUsageLimitLike[] = [];
+  let antigravityLimits: ProviderUsageLimitLike[] = [];
+  let zaiLimits: ProviderUsageLimitLike[] = [];
+  let totalAccounts = 0;
+
+  const promises: Promise<void>[] = [];
+
+  if (managementKey) {
+    promises.push(
+      (async () => {
+        try {
+          const res = await fetchFn(`${proxyBaseUrl.replace(/\/+$/, '')}/v0/management/auth-files`, {
+            headers: { 'X-Management-Key': managementKey },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (res.ok) {
+            const data = (await res.json()) as { files?: CliProxyAuthFile[] };
+            if (Array.isArray(data.files)) {
+              totalAccounts = data.files.filter((f) => !f.disabled).length;
+              const parsed = parseCliProxyAuthFiles(data.files);
+              claudeLimits = parsed.claudeLimits;
+              codexLimits = parsed.codexLimits;
+
+              const agFile = data.files.find(
+                (f) => f.provider === 'antigravity' && !f.disabled && f.auth_index,
+              );
+              if (agFile?.auth_index) {
+                try {
+                  const agRes = await fetchFn(`${proxyBaseUrl.replace(/\/+$/, '')}/v0/management/api-call`, {
+                    method: 'POST',
+                    headers: {
+                      'X-Management-Key': managementKey,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                      authIndex: agFile.auth_index,
+                      method: 'POST',
+                      url: 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
+                      header: {
+                        Authorization: 'Bearer $TOKEN$',
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)',
+                      },
+                      body: JSON.stringify({ project: agFile.project_id || 'aicode-consumers' }),
+                    }),
+                    signal: AbortSignal.timeout(5000),
+                  });
+                  if (agRes.ok) {
+                    const agData = (await agRes.json()) as { status_code?: number; body?: string };
+                    if (agData.status_code === 200 && agData.body) {
+                      antigravityLimits = parseAntigravityQuotaSummary(agData.body);
+                    }
+                  }
+                } catch {
+                  // Fall through safely
+                }
+              }
+            }
+          }
+        } catch {
+          // Network errors are contained
+        }
+      })(),
+    );
+  }
+
+  if (zaiApiKey && provider === 'gimso2xproxy') {
+    promises.push(
+      (async () => {
+        try {
+          const res = await fetchFn('https://api.z.ai/api/monitor/usage/quota/limit', {
+            headers: { Authorization: `Bearer ${zaiApiKey}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            zaiLimits = parseZaiQuotaLimits(data);
+          }
+        } catch {
+          // Network errors are contained
+        }
+      })(),
+    );
+  }
+
+  await Promise.allSettled(promises);
+
+
+  const allLimits = [...claudeLimits, ...codexLimits, ...antigravityLimits, ...zaiLimits];
+  if (allLimits.length === 0) return undefined;
+
+  return [
+    {
+      provider: 'gimso2xproxy',
+      fetchedAt: Date.now(),
+      limits: allLimits,
+      metadata: { plan: 'team', accounts: totalAccounts > 0 ? totalAccounts : undefined },
+    },
+  ];
 }

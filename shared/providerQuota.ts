@@ -68,7 +68,7 @@ const KNOWN_PROVIDER_NAMES: Readonly<Record<string, string>> = {
   anthropic: 'Claude',
   'openai-codex': 'Codex',
   'openai-codex-device': 'Codex',
-  opencodex: 'Codex',
+  opencodex: 'OpenCodex',
   'github-copilot': 'Copilot',
   google: 'Gemini',
   'google-antigravity': 'Antigravity',
@@ -77,6 +77,7 @@ const KNOWN_PROVIDER_NAMES: Readonly<Record<string, string>> = {
   'minimax-code': 'MiniMax',
   xai: 'xAI',
   zai: 'Z.ai',
+  gimso2xproxy: 'Gimso2x Proxy',
 };
 
 /** Short, stable display label for a runtime provider id. */
