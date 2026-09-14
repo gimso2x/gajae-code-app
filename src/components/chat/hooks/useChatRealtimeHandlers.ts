@@ -4,6 +4,9 @@ import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { ServerEvent } from '../../../contexts/WebSocketContext';
 import { showCompletionTitleIndicator } from '../../../utils/pageTitleNotification';
 import { playChatCompletionSound, playNotificationSound } from '../../../utils/notificationSound';
+import { authenticatedFetch } from '../../../utils/api';
+import { getBrowserNotificationsEnabled, getNotificationPermission, showBrowserNotification } from '../../../utils/browserNotification';
+import i18n from '../../../i18n/config';
 import type { MarkSessionIdle, MarkSessionProcessing } from '../../../hooks/useSessionProtection';
 import type { PendingPermissionRequest } from '../types/types';
 import type { ProjectSession, LLMProvider } from '../../../types/app';
@@ -12,6 +15,51 @@ import type { SessionStore, NormalizedMessage } from '../../../stores/useSession
 const requiresDecision = (request: { toolName?: unknown } | null | undefined) => request?.toolName !== 'ExitPlanMode' && request?.toolName !== 'exit_plan_mode';
 const hasDecision = (requests: Array<{ toolName?: unknown }> | null | undefined) => Array.isArray(requests) && requests.some(requiresDecision);
 
+type EventToggleName = 'stop' | 'actionRequired';
+
+let cachedPreferences: { stop: boolean; actionRequired: boolean } | null = null;
+let cacheExpiresAt = 0;
+const CACHE_TTL_MS = 60_000;
+
+export function invalidateNotificationPreferencesCache(): void {
+  cachedPreferences = null;
+  cacheExpiresAt = 0;
+}
+
+// ponytail: in-memory cache with 60s TTL prevents per-event network latency on urgent tool approvals. Upgrade path: shared TanStack Query if cross-component cache invalidation is ever needed.
+async function isEventNotificationEnabled(eventName: EventToggleName): Promise<boolean> {
+  const now = Date.now();
+  if (cachedPreferences && now < cacheExpiresAt) {
+    return cachedPreferences[eventName];
+  }
+  try {
+    const response = await authenticatedFetch('/api/settings/notification-preferences', {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) return false;
+    const data = await response.json() as { success?: boolean; preferences?: { events?: { stop?: boolean; actionRequired?: boolean } } };
+    if (!data.success || !data.preferences?.events) return false;
+    cachedPreferences = {
+      stop: data.preferences.events.stop !== false,
+      actionRequired: data.preferences.events.actionRequired !== false,
+    };
+    cacheExpiresAt = Date.now() + CACHE_TTL_MS;
+    return cachedPreferences[eventName];
+  } catch {
+    return false;
+  }
+}
+
+async function dispatchBrowserNotification(eventName: EventToggleName, title: string, body: string, tag: string): Promise<void> {
+  if (!getBrowserNotificationsEnabled() || getNotificationPermission() !== 'granted') return;
+  const enabled = await isEventNotificationEnabled(eventName);
+  if (!enabled) return;
+  showBrowserNotification(title, {
+    body,
+    tag,
+    silent: true,
+  });
+}
 interface UseChatRealtimeHandlersArgs {
   subscribe: (listener: (event: ServerEvent) => void) => () => void;
   provider: LLMProvider;
@@ -186,13 +234,27 @@ export function useChatRealtimeHandlers({
         if (event.success !== false) {
           showCompletionTitleIndicator();
           void playChatCompletionSound();
+          void dispatchBrowserNotification(
+            'stop',
+            i18n.t('notifications.browser.completionTitle', { defaultValue: 'Gajae Code' }),
+            i18n.t('notifications.browser.completionBody', { defaultValue: 'Your run has finished.' }),
+            `${provider}:${sessionId || 'default'}:complete`,
+          );
         }
         if (sessionId && sessionId === visible) void sessionStore.refreshFromServer(sessionId);
         return;
       }
       if (event.kind === 'permission_request') {
         if (!event.requestId) return;
-        if (requiresDecision({ toolName: event.toolName })) void playNotificationSound();
+        if (requiresDecision({ toolName: event.toolName })) {
+          void playNotificationSound();
+          void dispatchBrowserNotification(
+            'actionRequired',
+            i18n.t('notifications.browser.permissionTitle', { defaultValue: 'Gajae Code' }),
+            i18n.t('notifications.browser.permissionBody', { defaultValue: 'A tool needs your approval.' }),
+            `${provider}:${sessionId || 'default'}:permission:${event.requestId}`,
+          );
+        }
         if (sessionId === visible) {
           const previous = pendingRequests.current;
           if (!previous.some((request) => request.requestId === event.requestId)) {

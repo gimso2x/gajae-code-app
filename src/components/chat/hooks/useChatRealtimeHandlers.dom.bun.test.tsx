@@ -6,13 +6,14 @@ import { act, cleanup, render, renderHook, waitFor } from '@testing-library/reac
 import { createElement, useEffect, useRef } from 'react';
 
 import type { ServerEvent } from '../../../contexts/WebSocketContext';
-import { useSessionStore, type SessionStore } from '../../../stores/useSessionStore';
 import '../../../i18n/config';
-import MessageComponent from '../view/MessageComponent';
+import { useSessionStore, type SessionStore } from '../../../stores/useSessionStore';
+import { setBrowserNotificationsEnabled } from '../../../utils/browserNotification';
 import { assignMessageKeys } from '../utils/messageKeys';
+import MessageComponent from '../view/MessageComponent';
 
-import { useChatRealtimeHandlers } from './useChatRealtimeHandlers';
 import { normalizedToChatMessages } from './useChatMessages';
+import { invalidateNotificationPreferencesCache, useChatRealtimeHandlers } from './useChatRealtimeHandlers';
 
 /*
  * The stream frames as the transcript sees them. `stream_delta` accumulates
@@ -360,4 +361,100 @@ for (const endContent of ['A first answer', '']) {
     send({ kind: 'stream_end', sessionId: 'a', content: 'A next answer' } as ServerEvent);
     assert.equal(store.getSessionSlot('a')!.realtimeMessages.some((row) => row.id === '__streaming_a'), false);
   });
+test('dispatches browser notification on complete when enabled and permitted', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNotification = (window as unknown as { Notification?: typeof Notification }).Notification;
+  const originalVisibility = document.visibilityState;
+  const originalFocus = document.hasFocus;
+
+  let shownTitle = '';
+  let shownOptions: NotificationOptions | undefined;
+  class FakeNotification {
+    static get permission() { return 'granted' as const; }
+    constructor(title: string, options?: NotificationOptions) {
+      shownTitle = title;
+      shownOptions = options;
+    }
+  }
+
+  try {
+    (window as unknown as { Notification: unknown }).Notification = FakeNotification;
+    Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true, writable: true });
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true, writable: true });
+    document.hasFocus = () => false;
+    setBrowserNotificationsEnabled(true);
+    invalidateNotificationPreferencesCache();
+
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: true,
+      preferences: { events: { stop: true, actionRequired: true } },
+    }))) as typeof fetch;
+
+    const { send } = mount();
+    send({ kind: 'complete', sessionId: 'visible', success: true } as ServerEvent);
+
+    await waitFor(() => assert.equal(shownTitle, 'Gajae Code'));
+    assert.equal(shownOptions?.silent, true);
+    assert.match(shownOptions?.tag || '', /complete$/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalNotification) (window as unknown as { Notification: unknown }).Notification = originalNotification;
+    else delete (window as unknown as { Notification?: unknown }).Notification;
+    Object.defineProperty(document, 'visibilityState', { value: originalVisibility, configurable: true, writable: true });
+    document.hasFocus = originalFocus;
+    setBrowserNotificationsEnabled(false);
+    invalidateNotificationPreferencesCache();
+  }
+});
+
+test('dispatches browser notification on permission_request when actionable tool requires decision', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNotification = (window as unknown as { Notification?: typeof Notification }).Notification;
+  const originalVisibility = document.visibilityState;
+  const originalFocus = document.hasFocus;
+
+  let shownTitle = '';
+  let shownOptions: NotificationOptions | undefined;
+  class FakeNotification {
+    static get permission() { return 'granted' as const; }
+    constructor(title: string, options?: NotificationOptions) {
+      shownTitle = title;
+      shownOptions = options;
+    }
+  }
+
+  try {
+    (window as unknown as { Notification: unknown }).Notification = FakeNotification;
+    Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true, writable: true });
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true, writable: true });
+    document.hasFocus = () => false;
+    setBrowserNotificationsEnabled(true);
+    invalidateNotificationPreferencesCache();
+
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: true,
+      preferences: { events: { stop: true, actionRequired: true } },
+    }))) as typeof fetch;
+
+    const { send } = mount();
+    send({
+      kind: 'permission_request',
+      sessionId: 'visible',
+      requestId: 'req-123',
+      toolName: 'bash',
+    } as ServerEvent);
+
+    await waitFor(() => assert.equal(shownTitle, 'Gajae Code'));
+    assert.equal(shownOptions?.silent, true);
+    assert.match(shownOptions?.tag || '', /permission:req-123$/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalNotification) (window as unknown as { Notification: unknown }).Notification = originalNotification;
+    else delete (window as unknown as { Notification?: unknown }).Notification;
+    Object.defineProperty(document, 'visibilityState', { value: originalVisibility, configurable: true, writable: true });
+    document.hasFocus = originalFocus;
+    setBrowserNotificationsEnabled(false);
+    invalidateNotificationPreferencesCache();
+  }
+});
 }

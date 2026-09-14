@@ -7,6 +7,8 @@ import {
   readInterfaceFontSize,
 } from '../../../utils/interfaceFontSize';
 import { setNotificationSoundEnabled } from '../../../utils/notificationSound';
+import { getBrowserNotificationsEnabled, setBrowserNotificationsEnabled } from '../../../utils/browserNotification';
+import { invalidateNotificationPreferencesCache } from '../../chat/hooks/useChatRealtimeHandlers';
 import type {
   NotificationPreferencesState,
   ProjectSortOrder,
@@ -61,6 +63,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>('name');
   const [interfaceFontSize, setInterfaceFontSize] = useState(readInterfaceFontSize);
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferencesState>(notificationDefaults);
+  const [browserNotificationsEnabled, setBrowserNotificationsEnabledState] = useState(getBrowserNotificationsEnabled);
+  const [browserNotificationError, setBrowserNotificationError] = useState<string | null>(null);
   const saveTimer = useRef<number | null>(null);
   const hasJustOpened = useRef(true);
 
@@ -68,6 +72,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     try {
       const saved = decodeStoredValue<StoredProjectSettings>(localStorage.getItem('claude-settings'), {});
       setProjectSortOrder(saved.projectSortOrder === 'date' ? 'date' : 'name');
+      setBrowserNotificationsEnabledState(getBrowserNotificationsEnabled());
       try {
         const response = await authenticatedFetch('/api/settings/notification-preferences');
         if (!response.ok) {
@@ -100,6 +105,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       });
       if (!response.ok) throw new Error('Failed to save notification preferences');
       setSaveStatus('success');
+      invalidateNotificationPreferencesCache();
     } catch (error) {
       console.error('Error saving settings:', error);
       setSaveStatus('error');
@@ -151,6 +157,15 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     }
   }, []);
 
+  const handleBrowserNotificationsEnabledChange = useCallback((enabled: boolean) => {
+    const success = setBrowserNotificationsEnabled(enabled);
+    if (success) {
+      setBrowserNotificationsEnabledState(enabled);
+      setBrowserNotificationError(null);
+    } else {
+      setBrowserNotificationError('Failed to persist notification settings.');
+    }
+  }, []);
   return {
     activeTab,
     setActiveTab,
@@ -161,5 +176,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setInterfaceFontSize,
     notificationPreferences,
     setNotificationPreferences,
+    browserNotificationsEnabled,
+    setBrowserNotificationsEnabled: handleBrowserNotificationsEnabledChange,
+    browserNotificationError,
   };
 }

@@ -177,6 +177,25 @@
       "enabled": "이 데스크톱 앱은 알림을 표시할 수 있습니다.",
       "unsupported": "이 시스템은 데스크톱 알림을 지원하지 않습니다."
     },
+    "browser": {
+      "title": "브라우저 및 PWA 알림",
+      "description": "앱이 실행 중일 때 작업이 끝나거나 승인이 필요하면 Windows 네이티브 토스트 알림을 표시합니다.",
+      "unsupported": "이 브라우저에서는 알림이 지원되지 않거나 보안 컨텍스트(HTTPS 또는 localhost)가 필요합니다.",
+      "denied": "브라우저에서 알림이 차단되었습니다. 브라우저 또는 PWA 사이트 설정에서 알림을 허용해 주세요.",
+      "windowsHint": "팁: Windows 설정 → 시스템 → 알림에서 브라우저 알림이 허용되어 있고, 집중 지원(방해 금지)이 꺼져 있는지 확인하세요.",
+      "statusTitle": "데스크톱 알림",
+      "defaultHint": "알림을 표시하려면 브라우저 권한이 필요합니다.",
+      "enable": "알림 활성화",
+      "enabledToggle": "활성화됨",
+      "testTitle": "Gajae Code",
+      "testBody": "Gajae Code에서 보낸 테스트 알림입니다.",
+      "test": "테스트 알림",
+      "testHint": "Windows 토스트 알림을 즉시 테스트합니다.",
+      "completionTitle": "Gajae Code",
+      "completionBody": "실행이 완료되었습니다.",
+      "permissionTitle": "Gajae Code",
+      "permissionBody": "도구 실행 승인이 필요합니다."
+    },
     "sound": {
       "title": "음성",
       "description": "채팅 실행이 종료되거나 도구 승인 필요 시 짧은 소리를 재생합니다.",

@@ -192,6 +192,25 @@
       "enabled": "This desktop app can show notifications",
       "unsupported": "This system does not support desktop notifications."
     },
+    "browser": {
+      "title": "Browser & PWA notifications",
+      "description": "Show Windows native toast notifications when a run completes or needs approval while the app is open.",
+      "unsupported": "Browser notifications are not supported on this browser or require a secure context (HTTPS or localhost).",
+      "denied": "Notifications are blocked by your browser. To enable them, allow notifications in your browser or PWA site settings.",
+      "windowsHint": "Tip: Also ensure Windows Settings → System → Notifications allows notifications from your browser, and Focus assist is off.",
+      "statusTitle": "Desktop notifications",
+      "defaultHint": "Browser permission is required before notifications can be shown.",
+      "enable": "Enable notifications",
+      "enabledToggle": "Enabled",
+      "testTitle": "Gajae Code",
+      "testBody": "This is a test notification from Gajae Code.",
+      "test": "Test notification",
+      "testHint": "Fires a test Windows toast notification immediately.",
+      "completionTitle": "Gajae Code",
+      "completionBody": "Your run has finished.",
+      "permissionTitle": "Gajae Code",
+      "permissionBody": "A tool needs your approval."
+    },
     "sound": {
       "title": "Sound",
       "description": "Play a brief sound when a chat run ends or needs tool approval.",

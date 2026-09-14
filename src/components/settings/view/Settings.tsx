@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useSettingsController } from '../hooks/useSettingsController';
 import { Button, Dialog, DialogContent } from '../../../shared/view/ui';
 import type { SettingsProps } from '../types/types';
+import { isDesktopShell } from '../../../utils/externalLink';
 
 import SettingsSidebar from './SettingsSidebar';
 import AboutTab from './tabs/AboutTab';
@@ -51,6 +52,9 @@ function Settings({ isOpen, onClose, initialTab = 'appearance' }: SettingsProps)
     setInterfaceFontSize,
     notificationPreferences,
     setNotificationPreferences,
+    browserNotificationsEnabled,
+    setBrowserNotificationsEnabled,
+    browserNotificationError,
   } = controller;
 
   useEffect(() => {
@@ -128,7 +132,10 @@ function Settings({ isOpen, onClose, initialTab = 'appearance' }: SettingsProps)
                 <NotificationsSettingsTab
                   notificationPreferences={notificationPreferences}
                   onNotificationPreferencesChange={setNotificationPreferences}
-                  isDesktop={Boolean(bridge)}
+                  isDesktop={Boolean(bridge) || isDesktopShell()}
+                  browserNotificationsEnabled={browserNotificationsEnabled}
+                  onBrowserNotificationsEnabledChange={setBrowserNotificationsEnabled}
+                  browserNotificationError={browserNotificationError}
                   desktopNotifications={desktopState}
                   onEnableDesktopNotifications={() => setDesktopNotificationsEnabled(true)}
                   onDisableDesktopNotifications={() => setDesktopNotificationsEnabled(false)}

@@ -149,6 +149,25 @@ curl --fail http://127.0.0.1:3001/health
 
 If the service or health check fails, perform the rollback immediately rather
 than troubleshooting against a partially accepted release.
+## Web and PWA notifications (Windows and browser)
+
+Browser and PWA instances support OS-native toast notifications for completed runs
+and tool approval requests via the Web Notification API:
+
+- **Requirements**: Access via HTTPS or a trusted local host (`localhost` / `127.0.0.1`),
+  since browsers restrict the Notification API to secure contexts.
+- **Enablement**: Go to **Settings → Notifications**, under **Browser & PWA notifications**,
+  and click **Enable notifications** to grant browser permission.
+- **Open page lifetime**: Notifications are dispatched over the live WebSocket connection.
+  The PWA or browser window must remain open (it can be minimized or running in the background).
+- **Foreground suppression**: When the application window is currently active and focused,
+  toast notifications are suppressed to prevent duplicate disturbance.
+- **Windows troubleshooting**: If toasts do not appear after granting permission in the app:
+  1. Open Windows **Settings → System → Notifications** and ensure notifications from your
+     browser (Edge or Chrome) are turned on.
+  2. Verify that Windows **Focus assist** / **Do not disturb** is not suppressing alerts.
+  3. If permissions were previously denied, reset site permissions via the browser lock/tune icon
+     in the address bar.
 
 ## Rollback
 

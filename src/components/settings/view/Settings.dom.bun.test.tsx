@@ -105,3 +105,14 @@ test('Tab and Shift+Tab stay inside Settings at both ends of the Appearance cont
   await waitForFocus(last, 'Shift+Tab wraps focus to the last Settings control');
   assert.equal(view.closeCount(), 0);
 });
+test('Notifications tab renders browser notification onboarding in web mode', async () => {
+  const view = mount();
+  view.open();
+  const dialog = screen.getByRole('dialog', { name: 'Settings' });
+  const notifTabButton = within(dialog).getAllByRole('button', { name: 'Notifications' })[0];
+  await act(async () => { fireEvent.click(notifTabButton); });
+
+  await waitFor(() => {
+    assert.ok(screen.getByText('Browser & PWA notifications'));
+  });
+});

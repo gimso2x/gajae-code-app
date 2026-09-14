@@ -1,7 +1,13 @@
+import { useEffect, useState } from 'react';
 import { Bell, BellOff, BellRing, Play, Volume2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '../../../../shared/view/ui';
+import {
+  getNotificationPermission,
+  requestNotificationPermission,
+  showBrowserNotification,
+} from '../../../../utils/browserNotification';
 import { playChatCompletionSound } from '../../../../utils/notificationSound';
 import type { NotificationPreferencesState } from '../../types/types';
 
@@ -12,6 +18,9 @@ type NotificationsSettingsTabProps = {
   desktopNotifications?: { enabled: boolean; supported: boolean; connectedCount?: number; targetCount?: number; lastError?: string | null } | null;
   onEnableDesktopNotifications?: () => void;
   onDisableDesktopNotifications?: () => void;
+  browserNotificationsEnabled?: boolean;
+  onBrowserNotificationsEnabledChange?: (enabled: boolean) => void;
+  browserNotificationError?: string | null;
 };
 type EventName = keyof NotificationPreferencesState['events'];
 
@@ -41,6 +50,31 @@ export default function NotificationsSettingsTab(props: NotificationsSettingsTab
   const { t } = useTranslation('settings');
   const { notificationPreferences: preferences, onNotificationPreferencesChange: changePreferences } = props;
   const desktopEnabled = props.desktopNotifications?.enabled;
+  const [browserPermission, setBrowserPermission] = useState(getNotificationPermission);
+  const [isRequestingPermission, setIsRequestingPermission] = useState(false);
+
+  useEffect(() => {
+    const update = () => setBrowserPermission(getNotificationPermission());
+    window.addEventListener('focus', update);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      window.removeEventListener('focus', update);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, []);
+
+  const handleRequestBrowserPermission = async () => {
+    setIsRequestingPermission(true);
+    try {
+      const result = await requestNotificationPermission();
+      setBrowserPermission(result);
+      if (result === 'granted') {
+        props.onBrowserNotificationsEnabledChange?.(true);
+      }
+    } finally {
+      setIsRequestingPermission(false);
+    }
+  };
   const toggleDesktop = () => {
     if (desktopEnabled) {
       props.onDisableDesktopNotifications?.();
@@ -91,6 +125,111 @@ export default function NotificationsSettingsTab(props: NotificationsSettingsTab
               </div>
               {props.desktopNotifications?.lastError && (
                 <p className="text-sm text-destructive">{props.desktopNotifications.lastError}</p>
+              )}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {!props.isDesktop ? (
+        <div className="space-y-4 rounded-lg border border-border bg-card p-4">
+          <div className="space-y-1">
+            <h4 className="font-medium text-foreground">
+              {t('notifications.browser.title', { defaultValue: 'Browser & PWA notifications' })}
+            </h4>
+            <p className="text-sm text-muted-foreground">
+              {t('notifications.browser.description', {
+                defaultValue: 'Show Windows native toast notifications when a run completes or needs approval while the app is open.',
+              })}
+            </p>
+          </div>
+
+          {browserPermission === 'unsupported' ? (
+            <p className="text-sm text-muted-foreground">
+              {t('notifications.browser.unsupported', {
+                defaultValue: 'Browser notifications are not supported on this browser or require a secure context (HTTPS or localhost).',
+              })}
+            </p>
+          ) : browserPermission === 'denied' ? (
+            <div className="space-y-2">
+              <p className="text-sm text-destructive">
+                {t('notifications.browser.denied', {
+                  defaultValue: 'Notifications are blocked by your browser. To enable them, allow notifications in your browser or PWA site settings.',
+                })}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t('notifications.browser.windowsHint', {
+                  defaultValue: 'Tip: Also ensure Windows Settings → System → Notifications allows notifications from your browser, and Focus assist is off.',
+                })}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Bell className="h-4 w-4 text-primary" />
+                    <span className="text-sm font-medium text-foreground">
+                      {t('notifications.browser.statusTitle', { defaultValue: 'Desktop notifications' })}
+                    </span>
+                  </div>
+                  {browserPermission === 'default' ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t('notifications.browser.defaultHint', { defaultValue: 'Browser permission is required before notifications can be shown.' })}
+                    </p>
+                  ) : null}
+                </div>
+
+                {browserPermission === 'default' ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isRequestingPermission}
+                    onClick={handleRequestBrowserPermission}
+                  >
+                    <BellRing className="h-4 w-4" />
+                    {t('notifications.browser.enable', { defaultValue: 'Enable notifications' })}
+                  </Button>
+                ) : (
+                  <label className="flex shrink-0 items-center gap-2 text-sm text-foreground">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(props.browserNotificationsEnabled)}
+                      onChange={(input) => props.onBrowserNotificationsEnabledChange?.(input.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    {t('notifications.browser.enabledToggle', { defaultValue: 'Enabled' })}
+                  </label>
+                )}
+              </div>
+
+              {browserPermission === 'granted' && props.browserNotificationsEnabled ? (
+                <div className="flex items-center gap-2 pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      showBrowserNotification(
+                        t('notifications.browser.testTitle', { defaultValue: 'Gajae Code' }),
+                        {
+                          body: t('notifications.browser.testBody', { defaultValue: 'This is a test notification from Gajae Code.' }),
+                          force: true,
+                        },
+                      );
+                    }}
+                  >
+                    <Play className="h-4 w-4" />
+                    {t('notifications.browser.test', { defaultValue: 'Test notification' })}
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {t('notifications.browser.testHint', { defaultValue: 'Fires a test Windows toast notification immediately.' })}
+                  </span>
+                </div>
+              ) : null}
+
+              {props.browserNotificationError && (
+                <p className="text-sm text-destructive">{props.browserNotificationError}</p>
               )}
             </div>
           )}
