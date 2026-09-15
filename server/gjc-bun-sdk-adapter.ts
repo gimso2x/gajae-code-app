@@ -53,6 +53,7 @@ import {
   type GjcBrowserBackend,
 } from './gjc-browser-backend.js';
 import { resolveContainedExportCommand } from './gjc-export-path.js';
+import { notifyWikiStop, renderWikiStartContext } from './gjc-wiki-bridge.js';
 import { readSessionSnapshot } from './gjc-session-state.js';
 import { GjcGoalSession, GJC_GOAL_MODEL_OPERATIONS, matchesGjcGoalOwner, readPersistedGjcGoal, type GjcGoalScope } from './gjc-goal-session.js';
 import { installGjcGoalTool } from './gjc-goal-tool.js';
@@ -202,6 +203,8 @@ type ActiveRun = {
     setSdkPermissionProvider?(provider: GjcPermissionProvider | undefined): void;
   };
   sessionManager: SessionManager;
+  /** The run's cwd, retained for the post-run wiki-stop notification. */
+  cwd: string;
   unsubscribe: () => void;
   askController: GjcBunAskController;
   state: SdkRunState;
@@ -1104,6 +1107,14 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
         console.error('GJC SDK session disposal failed.');
         throw this.#poison();
       }
+      // Mirrors the shell gjc() wrapper's wiki-stop trigger, once per completed
+      // top-level run (see gjc-wiki-bridge.ts for the granularity note).
+      // Detached/best-effort: never awaited, never blocks or fails this run.
+      notifyWikiStop({
+        sessionId: run.sessionManager.getSessionId(),
+        cwd: run.cwd,
+        transcriptPath: run.sessionManager.getSessionFile() ?? '',
+      });
       // Only a completed physical teardown plus its live ownership receipt may
       // retire this session. Source hashes and logical terminal events are not idle proof.
       if (this.#sdkSessionOwners.has(run.session)) {
@@ -1176,6 +1187,13 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
         const permissionProvider = config.permissions
           ? createGjcPermissionProvider(config.permissions, askController, writer)
           : undefined;
+        // Bridges the shell gjc() wrapper's wiki-start injection into the app's
+        // in-process SDK sessions (see gjc-wiki-bridge.ts). Resolved once per
+        // #run()/#runInner() call — the app's closest equivalent to one `gjc`
+        // shell invocation — since systemPrompt below must stay synchronous.
+        // A missing/disabled/failing/timed-out script yields '' and must never
+        // block or fail this run.
+        const wikiStartContext = await renderWikiStartContext(config.cwd);
         const sessionOptions: Parameters<typeof createAgentSession>[0] = {
           // The app hosts the runtime in-process; the model must not reach for
           // the gjc CLI (absent on most app installs) or hand-edit ~/.gjc when
@@ -1186,6 +1204,7 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
             ...defaults,
             GAJAE_APP_ENV_NOTE,
             ...(browserBackend.appInstructions ? [browserBackend.appInstructions] : []),
+            ...(wikiStartContext ? [wikiStartContext] : []),
           ],
           cwd: config.cwd,
           sessionManager,
@@ -1319,6 +1338,7 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
           ...(goalScope ? { goalScope } : {}),
           session: result.session,
           sessionManager,
+          cwd: config.cwd,
           unsubscribe,
           askController,
           state,

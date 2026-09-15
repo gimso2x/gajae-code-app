@@ -430,6 +430,15 @@ async function runProductionWorker(env: NodeJS.ProcessEnv = {}): Promise<Product
           GJC_WORKER_AGENT_DIR: agentDirectory,
           GJC_CODING_AGENT_DIR: agentDirectory,
           PI_CODING_AGENT_DIR: agentDirectory,
+          // Same reasoning as the operator-profile isolation above: the real
+          // adapter now shells out to ~/my-wiki/wiki-system/bin/wiki-start.sh
+          // on every run (gjc-wiki-bridge.ts). This spawn is a fixed allowlist
+          // rather than a `...process.env` spread, so the test runner's own
+          // WIKI_DISABLE default (scripts/bun-dom-preload.ts) never reaches
+          // this child; without an explicit override here, a real machine's
+          // wiki install could add real subprocess/network latency inside this
+          // worker's own hard timeout.
+          WIKI_DISABLE: '1',
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });

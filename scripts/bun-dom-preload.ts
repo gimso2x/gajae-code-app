@@ -29,3 +29,12 @@ if (wantsDom && typeof globalThis.document === 'undefined') {
   // not wrapped in `act`.
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 }
+
+// gjc-wiki-bridge.ts shells out to the operator's ~/my-wiki wiki-start/stop
+// scripts on every SDK adapter run. Every Bun contract test that constructs a
+// real (non-fake-factory) adapter run must not depend on that machine-local,
+// possibly-networked install being present or fast; gjc-wiki-bridge.test.ts
+// covers the bridge itself with its own WIKI_START/WIKI_STOP overrides. This
+// preload runs before every `bun test <file>` invocation, so it also protects
+// direct invocations that bypass scripts/run-tests.mjs's own isolation.
+process.env.WIKI_DISABLE ??= '1';

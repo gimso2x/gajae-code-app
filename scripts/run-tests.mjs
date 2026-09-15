@@ -53,7 +53,7 @@ function runTests(label, files, { tsconfig } = {}) {
     : ['--test', ...files];
   const result = spawnSync(process.execPath, args, {
     cwd: process.cwd(),
-    env: tsconfig ? { ...process.env, TSX_TSCONFIG_PATH: tsconfig } : process.env,
+    env: tsconfig ? { ...isolatedTestEnvironment(), TSX_TSCONFIG_PATH: tsconfig } : isolatedTestEnvironment(),
     stdio: 'inherit',
   });
 
@@ -81,6 +81,11 @@ function isolatedTestEnvironment() {
   for (const name of ['TMUX', 'TMUX_PANE', 'KITTY_WINDOW_ID', 'TERM_SESSION_ID', 'WT_SESSION']) {
     delete env[name];
   }
+  // gjc-wiki-bridge.ts shells out to the operator's ~/my-wiki wiki-start/stop
+  // scripts on every adapter run. A hermetic test suite must not depend on
+  // that machine-local, possibly-networked install being present or fast;
+  // gjc-wiki-bridge.test.ts covers the bridge itself with its own overrides.
+  env.WIKI_DISABLE = '1';
   return env;
 }
 

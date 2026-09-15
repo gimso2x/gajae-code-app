@@ -35,6 +35,7 @@
     "server/gjc-sdk-bridge.ts",
     "server/gjc-sdk-client.ts",
     "server/gjc-session-state.ts",
+    "server/gjc-wiki-bridge.ts",
     "server/gjc-windows-job.ts",
     "server/gjc-worker-node-runtime.ts",
     "server/gjc-worker.ts",
@@ -68,6 +69,7 @@
     "server/gjc-sdk-workflow-identity.bun.test.ts",
     "server/gjc-session-state.test.ts",
     "server/gjc-session-worktree-contract.bun.test.ts",
+    "server/gjc-wiki-bridge.test.ts",
     "server/gjc-windows-job.test.ts",
     "server/gjc-worker-protocol.test.ts",
     "server/gjc-worker.test.ts"
