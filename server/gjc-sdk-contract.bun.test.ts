@@ -45,6 +45,7 @@ import {
   GJC_EGO_BROWSER_INSTRUCTIONS,
   GJC_EGO_BROWSER_UNAVAILABLE_INSTRUCTIONS,
 } from './gjc-browser-backend.js';
+import { egoActivityToken } from './gjc-ego-activity.js';
 import { GJC_CLEANUP_UNCONFIRMED_CODE } from './gjc-cleanup-error.js';
 import { isVerifiedSdkPatch, verifyRuntimeManifest } from './gjc-runtime-manifest.js';
 
@@ -347,11 +348,17 @@ async function fixture(
   // fake has to carry `override` like the real Settings does. Without it every
   // session creation threw and the whole file failed on "Fake session was not
   // created", which named the symptom and hid the cause.
+  //
+  // `has` is the same hazard: the compaction policy asks it before choosing a
+  // default, and a clone missing it throws during session creation. Real
+  // Settings answers for loaded settings and overrides but not schema
+  // defaults, and this store holds exactly those.
   const overrides = new Map<string, unknown>();
   const settingsClone = () => ({
     getModelRole: () => defaultModel || undefined,
     override: (key: string, value: unknown) => { overrides.set(key, value); },
     get: (key: string) => overrides.get(key),
+    has: (key: string) => overrides.has(key),
   });
   const settings = {
     getAppLifecycleActivity: () => idleLeaf('settings'),
@@ -2050,6 +2057,10 @@ test('settings loader resolves the current default model role for each run', asy
       getModelRole: () => `contract-provider/${modelId}`,
       override: () => undefined,
       get: () => undefined,
+      // This clone discards writes, so nothing is ever "present": the
+      // compaction policy sees an unconfigured session, which is what this
+      // test wants it to see.
+      has: () => false,
     }),
   });
   const f = await fixture(
@@ -2413,6 +2424,10 @@ test('selecting ego keeps the runtime on native, disables its browser tool, with
     assert.equal(appended[0], 'runtime-default');
     assert.match(appended.at(-1) ?? '', /'\/fake\/\.local\/bin\/ego-browser' nodejs/);
     assert.ok((appended.at(-1) ?? '').includes('ego-browser onboarding'));
+    // The space naming rule is how the app attributes a live ego space to this
+    // session without parsing Bash; the token is derived from the app session id.
+    assert.ok((appended.at(-1) ?? '').includes(`"${egoActivityToken('app-session-ego')} <short goal>"`));
+    assert.equal(JSON.stringify(f.frames).includes(egoActivityToken('app-session-ego')), false, 'the token is prompt plumbing, not wire state');
     assert.equal(appended.join('\n').toLowerCase().includes('aside repl'), false);
     assert.equal(egoProbes, 1);
     assert.equal(asideProbes, 0);
@@ -3888,6 +3903,26 @@ test('starting a session forces the tool settings the app policy declares', asyn
     assert.equal(f.toolPolicyOverrides.get('astEdit.enabled'), false);
     assert.equal(f.toolPolicyOverrides.get('tools.discoveryMode'), 'off');
     assert.equal(f.toolPolicyOverrides.get('mcp.discoveryMode'), false);
+
+    session.complete();
+    await run;
+  } finally {
+    await f.close();
+  }
+});
+
+test('starting a session turns adaptive compaction on', async () => {
+  const f = await fixture();
+  try {
+    // The static threshold only fires near `contextWindow - reserve`. On a
+    // 1M-token model a long app run never gets there and resends its whole
+    // prefix every turn instead, which is where the cache-read bill comes from.
+    const run = f.host.handle(request('session.start', 'compaction-policy', { message: 'hello', options: f.options }));
+    const session = await firstSession(f.sessions);
+
+    assert.equal(f.toolPolicyOverrides.get('compaction.adaptive.enabled'), true);
+    assert.equal(f.toolPolicyOverrides.get('compaction.adaptive.baseThresholdPercent'), 75);
+    assert.equal(f.toolPolicyOverrides.get('compaction.adaptive.minThresholdPercent'), 50);
 
     session.complete();
     await run;

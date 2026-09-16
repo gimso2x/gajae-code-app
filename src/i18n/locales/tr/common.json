@@ -84,6 +84,7 @@
       "changes": "Değişiklikler",
       "branch": "Dal",
       "directory": "Dizin",
+      "serviceTier": "Hizmet katmanı",
       "refresh": "Git durumunu yeniden yükle",
       "notARepository": "Bu klasör bir Git deposu değil",
       "gitUnavailable": "Git durumu okunamadı"
@@ -92,7 +93,13 @@
       "title": "İş",
       "working": "Çalışıyor",
       "agents": "Aracılar",
-      "agentRunning": "Çalışıyor"
+      "agentRunning": "Çalışıyor",
+      "browser": "Tarayıcı",
+      "browserRunning": "Tarayıcıda çalışıyor",
+      "browserSpace": "Tarayıcı alanı {{id}}",
+      "browserMore": "+{{count}} daha",
+      "browserActivePage": "Etkin sayfa",
+      "browserFrame": "Tarayıcı ekranı"
     },
     "actionRequired": {
       "title": "Yanıt gerekiyor",
