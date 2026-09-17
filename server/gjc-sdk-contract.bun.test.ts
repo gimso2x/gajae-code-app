@@ -388,6 +388,10 @@ async function fixture(
     toolNames: [],
     spawns: 'deny',
     bashPolicy: { allowedPrefixes: [] },
+    // The product default is off (#131); the browser-routing tests below are
+    // about the browser transport and turn computer use on so `computer` stays
+    // a visible control. The default has its own tests.
+    computerUse: true,
   };
   return { root, adapter, authStorage, modelRegistry, settings, trace, factoryOptions, sessions, frames, host, options, toolPolicyOverrides: overrides, close: () => rm(root, { recursive: true, force: true }) };
 }
@@ -1577,6 +1581,15 @@ async function identityFixture(behavior: {
     settings,
     generateSessionTitle: async () => null,
     createSessionFactory: async (input) => {
+      // User-scope MCP servers (`gjc mcp add`) load in app sessions as in the
+      // CLI; only delegated children (`agentId` set) opt out. The fixture below
+      // disables the autoload for offline isolation, so check the adapter's own
+      // request first.
+      if (input!.agentId === undefined) {
+        assert.equal(input!.enableMcpAutoload, undefined, 'a top-level app session must keep the runtime MCP autoload');
+      } else {
+        assert.equal(input!.enableMcpAutoload, false, 'a delegated child must not autoload MCP servers');
+      }
       const sdkOptions = {
         ...input,
         agentDir,
@@ -2309,6 +2322,60 @@ test('app automation is injected through the SDK built-in automationTools contra
     await run;
   } finally { await f.close(); }
 });
+test('computer use is withheld by default: no app transport and no SDK builtin name', async () => {
+  const f = await fixture();
+  try {
+    const { computerUse: _on, ...defaults } = f.options;
+    for (const [id, options] of [
+      ['computer-absent', defaults],
+      ['computer-false', { ...defaults, computerUse: false }],
+    ] as const) {
+      const index = f.sessions.length;
+      const run = f.host.handle(request('session.start', id, {
+        message: 'hello',
+        options: { ...options, builtinBrowserAvailable: true, toolNames: ['bash', 'browser', 'computer'] },
+      }, `app-session-${id}`));
+      const session = await waitFor(() => f.sessions[index]);
+      await session.promptStarted.promise;
+      const factoryInput = f.factoryOptions.at(-1)!;
+      assert.deepEqual(Object.keys(factoryInput.automationTools as Record<string, unknown>), ['browser'], id);
+      assert.equal((factoryInput.toolNames as string[]).includes('computer'), false, `${id}: the SDK builtin must not be requestable either`);
+      assert.equal((factoryInput.toolNames as string[]).includes('browser'), true, id);
+      session.complete();
+      await run;
+    }
+  } finally { await f.close(); }
+});
+
+test('computer use turned on offers the app transport on every backend, and a non-boolean is refused', async () => {
+  // A fake Aside probe: the real one walks PATH, which on a slow CI runner
+  // outlasts the session wait below.
+  const f = await fixture(undefined, undefined, undefined, undefined, undefined, undefined, {
+    probeAsideCli: () => ({ ok: true, path: '/fake/.local/bin/aside' }),
+  });
+  try {
+    for (const backend of ['builtin', 'aside'] as const) {
+      const index = f.sessions.length;
+      const run = f.host.handle(request('session.start', `computer-on-${backend}`, {
+        message: 'hello',
+        options: { ...f.options, browserBackend: backend, builtinBrowserAvailable: true, toolNames: ['bash', 'computer'] },
+      }, `app-session-computer-on-${backend}`));
+      const session = await waitFor(() => f.sessions[index]);
+      await session.promptStarted.promise;
+      const factoryInput = f.factoryOptions.at(-1)!;
+      assert.equal((factoryInput.automationTools as Record<string, { name: string }>).computer?.name, 'computer', backend);
+      assert.equal((factoryInput.toolNames as string[]).includes('computer'), true, backend);
+      session.complete();
+      await run;
+    }
+    await f.host.handle(request('session.start', 'computer-malformed', {
+      message: 'hello', options: { ...f.options, computerUse: 'yes' },
+    }, 'app-session-computer-malformed'));
+    const response = [...f.frames].reverse().find((frame) => frame.kind === 'response' && frame.id === 'computer-malformed') as { payload: { ok: boolean } } | undefined;
+    assert.equal(response?.payload.ok, false, 'a run option that is not a boolean fails the start');
+  } finally { await f.close(); }
+});
+
 test('unavailable built-in browser removes both the app transport and SDK builtin name', async () => {
   const f = await fixture();
   try {
@@ -2853,6 +2920,75 @@ test('a permissions block switches the SDK gate to prompt and answers it from th
     await f.host.handle(request('ask.reply', 'always-reply', { runId: 'policy', requestId: message.requestId, decision: { allow: true, always: true } }));
     assert.deepEqual((response(f.frames, 'always-reply').payload as Record<string, unknown>).result, { runId: 'policy', accepted: true });
     assert.deepEqual(await pending, { outcome: 'selected', optionId: 'allow_always', kind: 'allow_always' });
+
+    session.complete();
+    await run;
+  } finally { await f.close(); }
+});
+
+/*
+ * A run that chose the project location shares its working tree with every
+ * other session of that project, so a git state change there moves `HEAD` and
+ * the index underneath a live reader. The run's own cwd is the answer: a
+ * managed worktree is dispatched with the checkout as `cwd` while
+ * `projectPath` stays the repository root, and a project-location run gets the
+ * same path for both.
+ */
+
+test('a shared checkout asks before a git state change even when the policy would approve it', async () => {
+  const f = await fixture();
+  try {
+    // cwd and projectPath are the same directory: nothing was isolated.
+    const options = { ...f.options, projectPath: f.options.cwd, permissions: { mode: 'bypass', allowAlways: [] } };
+    const run = f.host.handle(request('session.start', 'shared-checkout', { message: 'hello', options }));
+    const session = await firstSession(f.sessions);
+    await session.promptStarted.promise;
+
+    const runtimeOptions = [
+      { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
+    ];
+    // Bypass still approves everything that does not rewrite shared git state.
+    assert.deepEqual(
+      await session.sdkPermissionProvider!({ toolCallId: 'c1', toolName: 'bash', title: 'npm test', rawInput: { command: 'npm test' } }, runtimeOptions),
+      { outcome: 'selected', optionId: 'allow_once', kind: 'allow_once' },
+    );
+
+    const pending = session.sdkPermissionProvider!({ toolCallId: 'c2', toolName: 'bash', title: 'commit', rawInput: { command: 'git commit -am wip' } }, runtimeOptions);
+    await Promise.resolve();
+    const card = f.frames.at(-1)!;
+    assert.equal(card.method, 'ask.presented');
+    const message = (card.payload as Record<string, unknown>).message as Record<string, unknown>;
+    assert.equal(message.kind, 'permission_request');
+    assert.equal(message.toolName, 'bash');
+
+    await f.host.handle(request('ask.reply', 'shared-reply', { runId: 'shared-checkout', requestId: message.requestId, decision: { allow: true } }));
+    assert.deepEqual(await pending, { outcome: 'selected', optionId: 'allow_once', kind: 'allow_once' });
+
+    session.complete();
+    await run;
+  } finally { await f.close(); }
+});
+
+test('a managed worktree owns its git state and is not asked', async () => {
+  const f = await fixture();
+  try {
+    // The checkout the run was dispatched into is not the repository root, so
+    // its git state belongs to this session alone.
+    const checkout = join(f.root, 'checkout');
+    await mkdir(checkout, { recursive: true });
+    const options = { ...f.options, cwd: checkout, projectPath: f.options.cwd, permissions: { mode: 'bypass', allowAlways: [] } };
+    const run = f.host.handle(request('session.start', 'isolated-checkout', { message: 'hello', options }));
+    const session = await firstSession(f.sessions);
+    await session.promptStarted.promise;
+
+    const runtimeOptions = [{ optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' }];
+    const before = f.frames.length;
+    assert.deepEqual(
+      await session.sdkPermissionProvider!({ toolCallId: 'c1', toolName: 'bash', title: 'commit', rawInput: { command: 'git commit -am wip' } }, runtimeOptions),
+      { outcome: 'selected', optionId: 'allow_once', kind: 'allow_once' },
+    );
+    assert.equal(f.frames.slice(before).some((frame) => frame.method === 'ask.presented'), false);
 
     session.complete();
     await run;

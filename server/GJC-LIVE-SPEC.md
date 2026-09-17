@@ -22,7 +22,10 @@ the native core. The worker creates `@gajae-code/coding-agent` sessions through
   diagnostic only and is not forwarded to browser clients as raw provider
   output.
 - Controlled questions, approvals, steering, usage, OAuth, and abort are owned
-  by the SDK adapter. Production has no CLI or loopback-side-channel fallback.
+  by the SDK adapter. There is no CLI or loopback-side-channel path at all:
+  `GjcWorkerHost` requires its runtime loader and `server/gjc-worker.ts` is a
+  library that runs nothing when executed. The only executable is
+  `gjc-bun-worker.ts`, which names the SDK adapter after the manifest check.
 
 ## Production boundary
 
@@ -101,6 +104,22 @@ components only: production GJC execution remains on the single-turn worker
 facade. Automatic capacity dispatch, multi-turn continuity, and branch/PR work
 from managed worktrees are deferred to Slice 3. Worker Protocol v1 and all React
 behavior are unchanged.
+
+A managed worktree's `job/<id>` ref lives exactly as long as something needs
+it (#157). `worktree.prune` removes the checkout and then deletes the branch
+unless it holds a commit reachable from no other local or remote ref, in which
+case the reply says `branchRetained: true`; unlanded work is evidence, not
+noise. Deleting a worktree session permanently (`DELETE
+/sessions/:id?force=true`) archives its job, prunes its checkout and reaps its
+ref this way; it refuses with `SESSION_WORKTREE_RUNNING` while the job runs
+and `SESSION_WORKTREE_DIRTY` while the checkout has uncommitted changes, and
+leaves the session in place in both cases. Archiving a session keeps checkout
+and ref. Refs that outlived their record - a reset job store, a
+`.gjc-worktrees/` removed by hand - are swept by `worktree.reap`, which the
+orchestrator runs once per repository per process before its first worktree
+there: it deletes every `job/*` ref with no registered worktree and no commit
+of its own, reports the rest as retained, and never touches a branch outside
+the namespace.
 
 ### Native PTY lifecycle
 
@@ -235,6 +254,18 @@ method or frame changes; the policy travels inside existing payloads:
   persists it to the project's allow-list before forwarding the reply.
 - `ask` questions keep their `sdk-ask:` prefix and answer semantics.
 
+The `computer` tool (native application control through CUA Driver) is
+withheld unless the user turned **Settings > Automation > Computer use** on
+(owner decision 2026-09-18, #131). Off is the default on every browser
+backend. The setting is server-owned: `enrichGjcSdkRunOptions` writes
+`computerUse` from the store and overwrites anything the request carried, the
+adapter drops both the app transport and the SDK builtin name while it is
+false, and `AutomationService.requireComputerSupported` refuses every computer
+call - bridge, HTTP route or future caller - while it is off, so a session
+that somehow held the tool still could not reach the driver. Turning it off
+again withholds the tool from every new session; a running session keeps its
+tool but its calls fail from that moment.
+
 The app-owned browser and computer tool wrappers receive the same validated
 run permission mode as the SDK gate. In `bypass`, target/origin resolution still
 runs, but the extra access question is omitted without adding grants to either
@@ -242,6 +273,36 @@ allow-list. Ask and auto-edits retain their existing access prompts. This does
 not auto-answer `ask` questions or override native readiness, OS permissions,
 or CUA driver restrictions. The mode is captured for the run; no
 implicit grant survives into a later Ask run.
+
+## MCP servers
+
+Which MCP servers reach a session is decided by scope, not by discovery
+(owner decision 2026-09-18, #161; `applyGjcToolSettingsPolicy` in
+`server/gjc-bun-sdk-adapter.ts`, pinned by `server/gjc-mcp-autoload.bun.test.ts`):
+
+- **User scope loads as in the CLI.** The servers the user registered with
+  `gjc mcp add` live in `<agentDir>/mcp.json` (the worker's agent directory is
+  `~/.gjc/agent` unless `GJC_WORKER_AGENT_DIR` names another). The runtime's
+  conventional autoload connects them before the session exists and their
+  tools are always-on for the model - independent of the app's explicit
+  `toolNames` and of discovery mode. The adapter never passes
+  `enableMcpAutoload: false` for a top-level session; app-owned delegated
+  children do opt out.
+- **Project scope does not load.** A repository's own `.gjc/mcp.json` is
+  refused by overriding `mcp.enableProjectConfig` to `false` for every run.
+  The runtime reads an *unset* value as `true`, so the override is
+  load-bearing: it is what stops opening a repository from starting its
+  programs inside a session. A `.mcp.json` in Claude Code format is an
+  import source for the runtime and is not loaded at run time by either
+  product.
+- **Discovery stays off.** `tools.discoveryMode` is `off` and
+  `mcp.discoveryMode` is `false`; with user-scope tools already always-on,
+  `search_tool_bm25` would only add a way to activate built-ins the app
+  withheld.
+
+Settings > Automation > Withheld runtime features reports the project-scope
+refusal in these words; it offers no control because a session cannot change
+it either.
 
 ## Browser backend
 
@@ -404,9 +465,6 @@ and `server/gjc-worker-client.test.ts`; see `docs/BROWSER-EGO-POC.md`.
 
 Focused coverage is in:
 
-- `server/gjc-cli.test.ts`
-- `server/gjc-sdk-client.test.ts`
-- `server/gjc-sdk-bridge.test.ts`
 - `server/gjc-core-host.test.ts`
 - `server/modules/providers/tests/gjc-session-watcher.test.ts`
 - `native/gajae-core/src/lib.rs`

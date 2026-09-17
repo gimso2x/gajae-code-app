@@ -89,6 +89,11 @@ export type SdkRunConfig = {
   browserBackend?: GjcBrowserBackend;
   /** Trusted server-side readiness for the desktop built-in WebView. */
   builtinBrowserAvailable?: boolean;
+  /**
+   * The user's Settings opt-in for native application control (CUA Driver).
+   * Server-resolved like the backend; absent or false withholds `computer`.
+   */
+  computerUse?: boolean;
   appSessionId?: string;
   goalUiVersion?: number;
   goalOwner?: string;
@@ -263,12 +268,25 @@ export function applyGjcToolSettingsPolicy(settings: Settings): void {
   // would advertise edits the browser session can never commit.
   settings.override('astEdit.enabled', false);
 
+  // MCP servers load by scope, and the scope is the trust boundary (owner
+  // decision 2026-09-18, #161):
+  //
+  // - User scope - the servers the user registered themselves with
+  //   `gjc mcp add`, in `<agentDir>/mcp.json` - loads exactly as in the CLI.
+  //   The runtime's conventional autoload connects them before the session
+  //   exists and surfaces their tools as always-on, independent of `toolNames`
+  //   and of discovery mode. The adapter never passes `enableMcpAutoload:
+  //   false` for a top-level session (delegated children do opt out).
+  // - Project scope - a repository's own `.gjc/mcp.json` - does not load. The
+  //   runtime treats an *unset* `mcp.enableProjectConfig` as true, so this
+  //   override is what stops opening a repository from starting its programs
+  //   inside a session. A `.mcp.json` (Claude Code format) is an import source
+  //   for the runtime, never loaded at run time in either product.
+  //
   // Tool discovery is the other door into the session's tool set, and it does
-  // not consult `toolNames`: a server listed in the user's own settings, or an
-  // `.mcp.json` in whatever project they open, would put tools this app never
-  // decided on in front of a browser session. These settings default closed,
-  // so this pins the default rather than changing behaviour - but a boundary
-  // that only holds while a user leaves their config alone is not a boundary.
+  // not consult `toolNames`. It stays off: with user-scope MCP tools already
+  // always-on, the search tool would only add a way to activate built-ins the
+  // app withheld. `server/gjc-mcp-autoload.bun.test.ts` pins both scopes.
   settings.override('tools.discoveryMode', 'off');
   settings.override('mcp.discoveryMode', false);
   settings.override('mcp.enableProjectConfig', false);
@@ -395,15 +413,24 @@ export function applyGjcBrowserBackend(
  * supplied automation tool unconditionally, so without this filter an Aside
  * session would still carry the app's WebView tool beside a prompt that says
  * the built-in browser is disabled.
+ *
+ * The computer transport is offered only when the user turned computer use on
+ * in Settings (owner decision 2026-09-18, #131). Off is the default, on every
+ * backend: a session that was never offered the tool cannot ask to drive an
+ * application, and the automation service refuses the call even if one did.
  */
 export function selectGjcAutomationTools(
   tools: AutomationTools,
   browserBackend: Pick<GjcResolvedBrowserBackend, 'exposesBuiltinTool'>,
   builtinBrowserAvailable = false,
+  computerUse = false,
 ): AutomationTools {
-  if (browserBackend.exposesBuiltinTool && builtinBrowserAvailable) return tools;
-  const { browser: _browser, ...rest } = tools;
-  return rest;
+  const { browser, computer, ...rest } = tools;
+  return {
+    ...rest,
+    ...(browserBackend.exposesBuiltinTool && builtinBrowserAvailable && browser ? { browser } : {}),
+    ...(computerUse && computer ? { computer } : {}),
+  };
 }
 
 function isAppOAuthCommand(message: string): boolean {
@@ -449,6 +476,7 @@ function configFromOptions(value: Record<string, unknown>): SdkRunConfig {
     || (candidate.appSessionId !== undefined && (typeof candidate.appSessionId !== 'string' || !candidate.appSessionId))
     || (candidate.browserBackend !== undefined && !isGjcBrowserBackend(candidate.browserBackend))
     || (candidate.builtinBrowserAvailable !== undefined && typeof candidate.builtinBrowserAvailable !== 'boolean')
+    || (candidate.computerUse !== undefined && typeof candidate.computerUse !== 'boolean')
   ) throw new Error(FAILURE);
   // A malformed policy block throws GjcRunPermissionsError, which keeps its
   // `invalid_permissions` code so the worker can answer with that code and the
@@ -464,6 +492,8 @@ function configFromOptions(value: Record<string, unknown>): SdkRunConfig {
     // Older/internal callers that do not carry the trusted capability must
     // never expose the SDK's own Puppeteer browser as an accidental fallback.
     builtinBrowserAvailable: candidate.builtinBrowserAvailable === true,
+    // Same for computer use: absent is off.
+    computerUse: candidate.computerUse === true,
     ...(permissions ? { permissions } : {}),
   };
 }
@@ -1228,6 +1258,7 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
         },
       );
       const trustedBuiltinBrowserAvailable = builtinBrowserAvailable && browserBackend.exposesBuiltinTool;
+      const computerUse = config.computerUse === true;
       const goalScope = config.appSessionId && config.goalOwner
         ? { appSessionId: config.appSessionId, owner: config.goalOwner, cwd: await realpath(config.cwd),
             projectPath: await realpath(typeof options.projectPath === 'string' ? options.projectPath : config.cwd) }
@@ -1238,12 +1269,23 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
       if (config.goalCommand && !goalEnabled) throw new Error('Goal controls are unavailable in this view.');
       settings.override('goal.enabled', goalEnabled);
       const askController = new GjcBunAskController(writer);
+      // A managed worktree run is dispatched with the checkout as its cwd while
+      // `projectPath` stays the repository root; a project-location run gets the
+      // same path for both. Comparing the resolved paths is the session's own
+      // answer to "is this checkout mine", with no extra state to keep in sync.
+      // Unknown resolves to "shared", so a path that cannot be read asks rather
+      // than assumes.
+      const isolatedCheckout = await (async () => {
+        const declaredRoot = typeof options.projectPath === 'string' && options.projectPath ? options.projectPath : config.cwd;
+        try { return (await realpath(config.cwd)) !== (await realpath(declaredRoot)); }
+        catch { return false; }
+      })();
       const model = await modelForWithRefresh(this.modelRegistry, configuredModelId);
       const resolvedCredential = await credentialFor(this.authStorage, config.credential, model);
       let delegation: GjcDelegationExecutor | undefined;
       try {
         const permissionProvider = config.permissions
-          ? createGjcPermissionProvider(config.permissions, askController, writer)
+          ? createGjcPermissionProvider(config.permissions, askController, writer, isolatedCheckout)
           : undefined;
         // Bridges the shell gjc() wrapper's wiki-start injection into the app's
         // in-process SDK sessions (see gjc-wiki-bridge.ts). Resolved once per
@@ -1288,7 +1330,10 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
             ? { credentialSelector: resolvedCredential.credentialSelector }
             : {}),
           toolNames: [...new Set([...config.toolNames, 'ask', ...(goalEnabled ? ['goal'] : [])])]
-            .filter((name) => name !== 'browser' || trustedBuiltinBrowserAvailable),
+            .filter((name) => name !== 'browser' || trustedBuiltinBrowserAvailable)
+            // The SDK has its own `computer` builtin; withholding the app
+            // transport alone would leave that name requestable.
+            .filter((name) => name !== 'computer' || computerUse),
           spawns: config.spawns,
           goalToolAllowedOps: goalEnabled ? GJC_GOAL_MODEL_OPERATIONS : [],
           bashAllowedPrefixes: config.bashPolicy.allowedPrefixes,
@@ -1300,7 +1345,7 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
               askController.uiContext,
               this.options.automationBridge,
               config.permissions?.mode,
-            ), browserBackend, trustedBuiltinBrowserAvailable)),
+            ), browserBackend, trustedBuiltinBrowserAvailable, computerUse)),
           } : {}),
         };
         if (config.toolNames.some((name) => GJC_APP_DELEGATION_TOOL_NAMES.includes(name as 'task' | 'subagent'))) {
